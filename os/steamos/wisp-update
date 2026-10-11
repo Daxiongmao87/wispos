@@ -1,0 +1,282 @@
+#!/usr/bin/python3
+"""wisp-update: the helper behind wisp-steamos-manager's Atomupd1 (docs/WISPOS-UPDATE-DESIGN.md). Run by the daemon, never by hand in normal use.
+
+  wisp-update check          fetch and VERIFY the signed manifest; print `update ID VERSION VARIANT SIZE TYPE` for an update this system can install now, or
+                             `later ID VERSION VARIANT SIZE TYPE REQUIRES` for one that needs a newer base first. Writes nothing to the card.
+  wisp-update apply ID       download the update's KERNEL and SYSTEM into /flash/wispos/update, verify size and sha256, and write READY last. Prints
+                             `progress PERCENT ETA_UNIX_SECONDS` while it works and `done` at the end. It never reboots and never touches the running KERNEL or SYSTEM.
+Failures print `error CODE message` and exit non-zero (the daemon turns CODE into the D-Bus error name). SIGTERM is a cancel: the partial files are removed first.
+
+What is trusted: the manifest, only after an ed25519 signature check with the public key baked into the image (openssl, `pkeyutl -verify -rawin`); each file, only after its
+size and sha256 match the verified manifest. Nothing else from the network is used. A manifest for another device, another variant or an older or equal build is not offered.
+The only files that may be named are KERNEL and SYSTEM, so a manifest cannot make this write anywhere else.
+
+Writes to the SD card are one staged copy per update and nothing else: /flash is read-only in the running system, remounted read-write for the staging and back afterwards
+(also when the download fails). Interrupted downloads resume (Range requests; the part files stay), so Pause/Resume and a Wi-Fi drop cost nothing; a cancel or a hash mismatch deletes them.
+
+Paths and limits (production defaults; every one can be overridden by an environment variable, which is how the tests run this against a local server):
+  WISP_UPDATE_CONF /usr/share/wispos/update.conf   JSON {"manifest_url": "https://..."}; absent or empty = no update source configured (said so, nothing guessed)
+  WISP_UPDATE_PUBKEY /usr/share/wispos/update-key.pub   PEM public key
+  WISP_OS_RELEASE /etc/os-release      WISP_FLASH_DIR /flash      WISP_UPDATE_NO_REMOUNT=1 (tests)      WISP_UPDATE_ALLOW_HTTP=1 (tests: production refuses non-https)
+  WISP_UPDATE_NET_TIMEOUT 30 (seconds per network operation)      WISP_UPDATE_RETRIES 6 (consecutive failures without progress before giving up)
+  WISP_UPDATE_FREE_MARGIN 67108864 (bytes that must stay free after staging)      WISP_UPDATE_FREE_BYTES (tests: pretend this much is free)
+"""
+import base64, hashlib, json, os, re, shutil, signal, subprocess, sys, tempfile, time, urllib.error, urllib.request
+
+CONF = os.environ.get('WISP_UPDATE_CONF', '/usr/share/wispos/update.conf')
+PUBKEY = os.environ.get('WISP_UPDATE_PUBKEY', '/usr/share/wispos/update-key.pub')
+OS_RELEASE = os.environ.get('WISP_OS_RELEASE', '/etc/os-release')
+FLASH = os.environ.get('WISP_FLASH_DIR', '/flash')
+NET_TIMEOUT = float(os.environ.get('WISP_UPDATE_NET_TIMEOUT', '30'))
+RETRIES = int(os.environ.get('WISP_UPDATE_RETRIES', '6'))
+FREE_MARGIN = int(os.environ.get('WISP_UPDATE_FREE_MARGIN', str(64 << 20)))
+CHUNK = 256 << 10
+VARIANT = 'stable'
+FILES = ('KERNEL', 'SYSTEM')                          # the only names a manifest may carry
+
+
+class Fail(Exception):
+    """A failure the daemon reports: CODE becomes the D-Bus error name, the message is shown to the user."""
+    def __init__(self, code, message): super().__init__(message); self.code = code; self.message = message
+
+
+class Cancelled(Exception): pass
+
+
+def say(*parts): print(*parts, flush=True)
+
+
+# ---- identity and versions -----------------------------------------------------------------------
+def read_os_release(path=None):
+    out = {}
+    try:
+        for line in open(path or OS_RELEASE):
+            if '=' in line: k, v = line.rstrip('\n').split('=', 1); out[k] = v.strip('"\'')
+    except OSError: pass
+    return out
+
+
+def build_key(s):
+    """'20261012.1' -> (20261012, 1): build ids compare like version numbers."""
+    m = re.fullmatch(r'(\d{8})\.(\d+)', str(s))
+    if not m: raise Fail('BadManifest', f'build id {s!r} is not YYYYMMDD.N')
+    return int(m.group(1)), int(m.group(2))
+
+
+def version_key(s):
+    """'0.1.0-dev' -> (0, 1, 0): the numeric dotted part, so 0.1.1 > 0.1.0-dev."""
+    m = re.match(r'(\d+(?:\.\d+)*)', str(s))
+    return tuple(int(p) for p in m.group(1).split('.')) if m else ()
+
+
+# ---- network -------------------------------------------------------------------------------------
+def check_url(url):
+    if url.startswith('https://') or (url.startswith('http://') and os.environ.get('WISP_UPDATE_ALLOW_HTTP') == '1'): return url
+    raise Fail('BadManifest', f'refusing a non-https update url: {url[:80]}')
+
+
+def open_url(url, start=0):
+    req = urllib.request.Request(check_url(url), headers={'User-Agent': 'wisp-update/1'})
+    if start: req.add_header('Range', f'bytes={start}-')
+    return urllib.request.urlopen(req, timeout=NET_TIMEOUT)
+
+
+def fetch_small(url, limit=1 << 20):
+    try:
+        with open_url(url) as r: data = r.read(limit + 1)
+    except urllib.error.HTTPError as e:
+        if e.code == 404: raise Fail('NoRelease', 'no update has been published yet')                 # GitHub answers 404 for releases/latest/download until the first release exists
+        raise Fail('NetworkError', f'the update server answered HTTP {e.code}')
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise Fail('NetworkError', f'cannot reach the update server: {getattr(e, "reason", e)}')
+    if len(data) > limit: raise Fail('BadManifest', 'the manifest is implausibly large')
+    return data
+
+
+# ---- the signed manifest -------------------------------------------------------------------------
+def verify_signature(manifest, sig_b64):
+    if not os.path.isfile(PUBKEY): raise Fail('NoSigningKey', 'this image carries no update signing key')
+    try: sig = base64.b64decode(sig_b64.strip(), validate=True)
+    except ValueError: raise Fail('BadSignature', 'the manifest signature is not valid base64')
+    if len(sig) != 64: raise Fail('BadSignature', 'the manifest signature has the wrong length for ed25519')
+    with tempfile.TemporaryDirectory(prefix='wisp-update-', dir=os.environ.get('TMPDIR') or '/run') as d:       # RAM: nothing goes to the card
+        open(f'{d}/m', 'wb').write(manifest); open(f'{d}/s', 'wb').write(sig)
+        r = subprocess.run(['openssl', 'pkeyutl', '-verify', '-rawin', '-in', f'{d}/m', '-sigfile', f'{d}/s', '-pubin', '-inkey', PUBKEY], capture_output=True)
+    if r.returncode != 0: raise Fail('BadSignature', 'the update manifest is not signed by the key in this image')
+
+
+def load_manifest():
+    try: conf = json.load(open(CONF))
+    except (OSError, ValueError): conf = {}
+    url = conf.get('manifest_url') if isinstance(conf, dict) else None
+    if not url: raise Fail('NoUpdateSource', 'no update source is configured in this image')
+    raw = fetch_small(url); sig = fetch_small(url + '.sig', 4096)
+    verify_signature(raw, sig)
+    try: m = json.loads(raw)
+    except ValueError: raise Fail('BadManifest', 'the signed manifest is not valid JSON')
+    if not isinstance(m, dict) or m.get('format') != 1: raise Fail('BadManifest', 'unknown manifest format')
+    for key, typ in (('variant', str), ('build_id', str), ('version', str), ('hw_device', str)):
+        if not isinstance(m.get(key), typ) or not m[key]: raise Fail('BadManifest', f'manifest field {key} is missing or wrong')
+    build_key(m['build_id'])
+    if not isinstance(m.get('requires', ''), str): raise Fail('BadManifest', 'manifest field requires is wrong')
+    if m.get('update_type', 0) not in (0, 1): raise Fail('BadManifest', 'manifest field update_type is wrong')
+    files = m.get('files')
+    if not isinstance(files, dict) or set(files) != set(FILES): raise Fail('BadManifest', 'the manifest must name exactly KERNEL and SYSTEM')
+    for name, f in files.items():
+        if not (isinstance(f, dict) and isinstance(f.get('url'), str) and isinstance(f.get('size'), int) and f['size'] > 0 and re.fullmatch(r'[0-9a-f]{64}', str(f.get('sha256', '')))):
+            raise Fail('BadManifest', f'manifest entry {name} is wrong')
+        check_url(f['url'])
+    return m
+
+
+def classify(m, osr):
+    """'update' (installable now), 'later' (needs a newer base first) or None (not for this system, or not newer)."""
+    if m['hw_device'] != osr.get('HW_DEVICE', '') or m['variant'] != VARIANT: return None
+    running = osr.get('BUILD_ID', '')
+    if build_key(m['build_id']) <= (build_key(running) if re.fullmatch(r'\d{8}\.\d+', running) else (0, 0)): return None        # not newer (an image with no comparable build id counts as oldest)
+    current = version_key(osr.get('WISPOS_VERSION') or osr.get('VERSION_ID', ''))
+    return 'later' if m.get('requires') and version_key(m['requires']) > current else 'update'
+
+
+def total_size(m): return sum(m['files'][n]['size'] for n in FILES)
+
+
+def check():
+    m = load_manifest(); kind = classify(m, read_os_release())
+    if kind == 'update': say('update', m['build_id'], m['version'], m['variant'], total_size(m), m.get('update_type', 0))
+    elif kind == 'later': say('later', m['build_id'], m['version'], m['variant'], total_size(m), m.get('update_type', 0), m['requires'])
+
+
+# ---- staging -------------------------------------------------------------------------------------
+class Flash:
+    """/flash read-write for the duration of the staging, read-only again afterwards, whatever happens."""
+    def __enter__(self):
+        self.remounted = os.environ.get('WISP_UPDATE_NO_REMOUNT') != '1'
+        if self.remounted and subprocess.run(['mount', '-o', 'remount,rw', FLASH], capture_output=True).returncode != 0: raise Fail('FlashReadOnly', 'cannot make the boot partition writable')
+        return self
+    def __exit__(self, *a):
+        if self.remounted: subprocess.run(['mount', '-o', 'remount,ro', FLASH], capture_output=True)
+        return False
+
+
+def fsync_dir(path):
+    fd = os.open(path, os.O_RDONLY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
+
+
+def clean(stage, keep=()):
+    for name in os.listdir(stage) if os.path.isdir(stage) else []:
+        if name not in keep: os.unlink(os.path.join(stage, name))
+
+
+def free_bytes():
+    forced = os.environ.get('WISP_UPDATE_FREE_BYTES')
+    return int(forced) if forced else shutil.disk_usage(FLASH).free
+
+
+def sha_of(path, upto=None):
+    h = hashlib.sha256(); left = upto
+    with open(path, 'rb') as f:
+        while left is None or left > 0:
+            b = f.read(CHUNK if left is None else min(CHUNK, left))
+            if not b: break
+            h.update(b); left = None if left is None else left - len(b)
+    return h
+
+
+class Progress:
+    def __init__(self, total, already): self.total, self.done, self.t0, self.base, self.last = total, already, time.time(), already, 0.0
+    def add(self, n):
+        self.done += n; now = time.time()
+        if now - self.last >= 0.5 or self.done >= self.total:
+            self.last = now; rate = (self.done - self.base) / max(now - self.t0, 1e-6)
+            say('progress', f'{100.0 * self.done / self.total:.1f}', int(now + (self.total - self.done) / rate) if rate > 0 and self.done < self.total else 0)
+
+
+def download(name, spec, stage, progress):
+    """One file into stage/NAME.part, resuming; returns once it is verified and renamed to NAME.new."""
+    part, final = os.path.join(stage, name + '.part'), os.path.join(stage, name + '.new')
+    size, want = spec['size'], spec['sha256']
+    have = os.path.getsize(part) if os.path.exists(part) else 0
+    if have > size: os.unlink(part); have = 0
+    h = sha_of(part) if have else hashlib.sha256()
+    progress.add(have); failures = 0
+    while have < size:
+        try:
+            with open_url(spec['url'], have) as r:
+                if have and r.status != 206:                           # the server ignored the Range header and is sending the whole file: start this one again from byte 0
+                    progress.done -= have; have = 0; h = hashlib.sha256()
+                with open(part, 'ab' if have else 'wb') as f:
+                    while have < size:
+                        b = r.read(min(CHUNK, size - have))
+                        if not b: raise OSError('the server closed the connection early')
+                        f.write(b); h.update(b); have += len(b); progress.add(len(b)); failures = 0
+                    f.flush(); os.fsync(f.fileno())
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500 and e.code not in (408, 429):          # a missing or refused file will not appear by waiting
+                raise Fail('NetworkError', f'the server refused {name}: HTTP {e.code}')
+            failures += 1
+            if failures > RETRIES: raise Fail('NetworkError', f'the download of {name} keeps failing: {getattr(e, "reason", e)}')
+            time.sleep(min(2 ** failures, 30) if os.environ.get('WISP_UPDATE_NO_BACKOFF') != '1' else 0)
+            have = os.path.getsize(part) if os.path.exists(part) else 0
+            h = sha_of(part) if have else hashlib.sha256()
+    if have != size or h.hexdigest() != want:
+        os.unlink(part); raise Fail('HashMismatch', f'{name} does not match the signed manifest; it was deleted')
+    os.replace(part, final); fsync_dir(stage)
+
+
+def apply(update_id):
+    m = load_manifest()
+    if m['build_id'] != update_id: raise Fail('UnknownUpdate', f'{update_id} is not the update the server offers now ({m["build_id"]})')
+    kind = classify(m, read_os_release())
+    if kind != 'update': raise Fail('UnknownUpdate', 'that update does not apply to this system' if kind is None else f'that update needs version {m["requires"]} first')
+    total = total_size(m)
+    with Flash():
+        stage = os.path.join(FLASH, 'wispos', 'update'); os.makedirs(stage, exist_ok=True)
+        marker = os.path.join(stage, 'READY')
+        try:                                                           # staged already, and still intact?
+            ready = json.load(open(marker))
+            if ready.get('build_id') == update_id and all(os.path.getsize(os.path.join(stage, n + '.new')) == m['files'][n]['size'] for n in FILES):
+                say('progress', '100.0', 0); say('done'); return
+        except (OSError, ValueError): pass
+        if os.path.exists(marker): os.unlink(marker)                   # stale or damaged: staging starts over
+        keep = {n + '.part' for n in FILES}
+        clean(stage, keep)
+        for n in FILES:                                                # parts only count for the files they belong to
+            p = os.path.join(stage, n + '.part')
+            if os.path.exists(p) and os.path.getsize(p) > m['files'][n]['size']: os.unlink(p)
+        partial = sum(os.path.getsize(os.path.join(stage, n + '.part')) for n in FILES if os.path.exists(os.path.join(stage, n + '.part')))
+        if free_bytes() + partial < total + FREE_MARGIN: raise Fail('DiskFull', f'not enough free space on the boot partition: {total >> 20} MiB needed')
+        progress = Progress(total, 0)
+        try:
+            for n in FILES: download(n, m['files'][n], stage, progress)
+        except Cancelled:
+            clean(stage); raise
+        except Fail as e:
+            if e.code != 'NetworkError': clean(stage)                 # network trouble keeps the parts for a later resume; anything else starts clean
+            raise
+        tmp = marker + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'build_id': update_id, 'version': m['version'], 'files': {n: {'size': m['files'][n]['size'], 'sha256': m['files'][n]['sha256']} for n in FILES}}, f)
+            f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, marker); fsync_dir(stage)                      # READY is the last thing written: its presence means everything before it is complete
+    say('progress', '100.0', 0); say('done')
+
+
+def main(argv):
+    def on_term(sig, frame): raise Cancelled()
+    signal.signal(signal.SIGTERM, on_term)
+    try:
+        if argv[1:2] == ['check'] and len(argv) == 2: check()
+        elif argv[1:2] == ['apply'] and len(argv) == 3: apply(argv[2])
+        else: print(__doc__.split('\n\n')[0], file=sys.stderr); return 2
+    except Fail as e:
+        say('error', e.code, e.message); return 1
+    except Cancelled:
+        return 143
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

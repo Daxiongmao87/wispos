@@ -1,0 +1,107 @@
+#!/bin/bash
+# WispOS session: native ARM64 Steam in Big Picture mode on the retained Sway/Xwayland stack.
+# Run by wisp-steam.service. Requires the unpacked Steam runtime under /storage/wispos and
+# the SIGILL fallback preload in the image, /usr/lib/wispos (the H700's Cortex-A53 lacks the LSE atomics Steam uses).
+set -u
+[ "$(uname -m)" = aarch64 ] || exit 1
+base=/storage/wispos
+steam_root=$base/runtime/steam
+log_dir=$base/logs/session
+mkdir -p "$log_dir" "$base/home"
+set +u; . /etc/profile; set -u
+: "${DISPLAY:=:0.0}" "${XDG_RUNTIME_DIR:=/var/run/0-runtime-dir}" "${WAYLAND_DISPLAY:=wayland-1}"
+export DISPLAY XDG_RUNTIME_DIR WAYLAND_DISPLAY SWAYSOCK="$XDG_RUNTIME_DIR/sway-ipc.0.sock"
+say() { printf '%s %s\n' "$(date +%H:%M:%S)" "$1" | tee -a "$log_dir/session.log"; }
+
+[ -f "$base/runtime/READY" ] && [ -x "$steam_root/steamrtarm64/steam" ] || { say 'Steam runtime is missing'; exit 3; }
+(cd /usr/lib/wispos && sha256sum -c libwispos-ldadd.sha256 >/dev/null 2>&1) || { say 'SIGILL fallback preload missing or altered'; exit 3; }
+
+export HOME=$base/home
+mkdir -p "$HOME/.steam" "$HOME/.local/share" "$steam_root/logs" "$steam_root/package"
+ln -sfn "$steam_root" "$HOME/.local/share/Steam"
+for pair in root:. steam:. bin64:steamrtarm64 binarm64:steamrtarm64 \
+            sdk64:linuxarm64 sdkarm64:linuxarm64 sdk32:linux32; do
+    ln -sfn "$steam_root/${pair#*:}" "$HOME/.steam/${pair%%:*}"
+done
+printf 'publicbeta\n' >"$steam_root/package/beta"
+# Steam preloads its in-game overlay (steamrtarm64/gameoverlayrenderer.so) into every game process, and lists the SIGILL fallback BEFORE it. Libraries initialise
+# in reverse preload order, so the overlay's constructors (which contain LSE atomics this Cortex-A53 lacks) ran before the fallback had installed its handler: the
+# launch shell and then the game's container died with SIGILL, which Steam reported as exit -1 or a silent exit 0 (docs/WISPOS-NOTES.md, Steam-launched Worms).
+# Steam also lists ~/.steam/bin32/gameoverlayrenderer.so, AFTER the overlay and normally absent. A separate copy of the fallback at that path is loaded after the
+# overlay and so initialises before it, inside pressure-vessel's container as well. It must be a copy, not a link: a second path to the same file is loaded once.
+# That alone is not enough for a program whose LIBRARY constructors call close()/dlsym() (libpython through libGL/libX11): dependencies initialise before every preload, and
+# the overlay hooks those calls with LSE atomics. The library is therefore also linked -z initfirst (os/build-rootfs.sh), so its constructor runs before any other object's.
+mkdir -p "$HOME/.steam/bin32"
+cmp -s /usr/lib/wispos/libwispos-ldadd.so "$HOME/.steam/bin32/gameoverlayrenderer.so" 2>/dev/null \
+    || cp /usr/lib/wispos/libwispos-ldadd.so "$HOME/.steam/bin32/gameoverlayrenderer.so"
+export SDL_VIDEODRIVER=x11 STEAM_RUNTIME=1
+# Game defaults, inherited by every game Steam starts (a game's own launch options still override them). This GPU has no Vulkan driver, so Direct3D goes
+# through WineD3D (OpenGL) instead of DXVK; and Wine's debug logging is OFF: tracing slowed BIT.TRIP RUNNER's load from about 2 minutes to many minutes
+# (docs/WISPOS-NOTES.md, game with tracing off). Never set PROTON_LOG or a WINEDEBUG other than -all here.
+export PROTON_USE_WINED3D=1 WINEDEBUG=-all
+# pressure-vessel compiles the English locale inside the container at EVERY container start (two per game launch) because the container's glibc is newer than the host's, so
+# it cannot reuse the host's locale data: about 55 s of phase one and again in phase two on this CPU (measured: launch to game window 195 s with it, 129 s without;
+# docs/WISPOS-NOTES.md "Launch timeline"). Games already get LANG=C.UTF-8 LC_ALL=C from Steam; only a program asking for en_US.UTF-8 by name loses that locale.
+export PRESSURE_VESSEL_GENERATE_LOCALES=0
+# Native Linux x86 games (Half-Life family, Counter-Strike, ...) are run by Valve's FEX tool (Steam app 3127680, fex-compat-tool), which needs an x86 guest root filesystem with a
+# graphics provider: STEAM_COMPAT_GRAPHICS_PROVIDER is the path of its graphics_provider.json (SteamOS ships the root at /usr/share/guestos/fex-mesa; this image does not, so the
+# FEX project's Ubuntu RootFS is unpacked under $base/guestos). Without the variable the tool exits silently and the game never opens a window. ThunksDB_GL:1 routes the guest's
+# OpenGL to the host's Mesa instead of a software renderer. Only exported when the root exists, so a device without it behaves exactly as before.
+# (docs/WISPOS-NOTES.md, "Half-Life runs natively under FEX".)
+guest_root=$base/guestos/ubuntu-24.04
+if [ -f "$guest_root/graphics_provider.json" ]; then
+    export STEAM_COMPAT_GRAPHICS_PROVIDER="$guest_root/graphics_provider.json" STEAM_COMPAT_FEX_CONFIG="TSOEnabled:1 Multiblock:1 ThunksDB_GL:1"
+fi
+export LD_LIBRARY_PATH="/usr/lib/wispos/lib:$base/runtime/lib:$steam_root/steamrtarm64:$steam_root/steamrtarm64/panorama${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# No hardware Vulkan driver on this GPU; Steam's bundled software driver satisfies its GPU query.
+export VK_ICD_FILENAMES="$steam_root/steamrtarm64/vk_swiftshader_icd.json"
+
+# Compressed swap (2048 MiB lz4, compressed pages capped at 450 MiB of RAM; idempotent). Operator raised it from 768 MiB on 2026-10-09 after the install
+# exhausted the old swap; the sweet spot is still being measured (docs/WISPOS-NOTES.md).
+if ! grep -q '^/dev/zram0[[:space:]]' /proc/swaps; then
+    modprobe zram num_devices=1 \
+      && [ "$(cat /sys/block/zram0/disksize)" = 0 ] \
+      && printf 'lz4\n' >/sys/block/zram0/comp_algorithm \
+      && printf '2147483648\n' >/sys/block/zram0/disksize \
+      && printf '471859200\n' >/sys/block/zram0/mem_limit \
+      && mkswap /dev/zram0 >/dev/null && swapon -p 200 /dev/zram0 \
+      || say 'warning: zram swap setup failed'
+fi
+printf '180\n' >/proc/sys/vm/swappiness
+ulimit -c 0
+
+# Steam must start on a fresh Xwayland. Reusing the previous Steam's server (it only exits by itself after ~10 s without clients) left Steam's UI
+# stalled or black on about half of the quick restarts measured on the handheld (docs/WISPOS-NOTES.md 4d). sway respawns Xwayland on demand.
+# begin fresh_xwayland
+fresh_xwayland() {
+    for p in $(pidof Xwayland); do kill "$p" 2>/dev/null; done
+    n=0; while [ -n "$(pidof Xwayland)" ] && [ "$n" -lt 20 ]; do sleep 0.5; n=$((n + 1)); done
+    sleep 2
+}
+# end fresh_xwayland
+
+# (Exit status 3 means a missing or altered payload: the unit does not retry that.)
+# Steam exits with 0 or 42 when it wants to be restarted (self-update, "Exit Steam" from the
+# UI). Relaunch those; give up (so systemd's fallback can act) on a rapid crash loop.
+starts=0; window_start=$(date +%s)
+while :; do
+    now=$(date +%s)
+    if [ $((now - window_start)) -gt 120 ]; then starts=0; window_start=$now; fi
+    starts=$((starts + 1))
+    if [ "$starts" -gt 8 ]; then say 'Steam restarted too quickly; giving up'; exit 1; fi
+    say "starting Steam (start $starts in this window)"
+    fresh_xwayland
+    wisp-steam-seed "$HOME/.local/share/Steam/config/config.vdf" 2>&1 | tee -a "$log_dir/session.log"      # default compat tool = ARM64 Proton (Steam is not running here)
+    wisp-fex-official 2>&1 | tee -a "$log_dir/session.log"                                                 # the FEX project's own Windows modules (DEP-disabled mode), stock upstream binaries
+    wisp-wow64-valve 2>&1 | tee -a "$log_dir/session.log"                                                   # asks Steam for Valve's Proton app once; copies its tested wow64.dll when installed
+    wisp-proton-patch 2>&1 | tee -a "$log_dir/session.log"                                                   # no repeated install-script evaluation (about 100 s per launch)
+    cd "$steam_root" || exit 1
+    # wisp-steam-launch starts the SteamOS manager on this session bus BEFORE Steam, which looks for it once at start-up (see that script)
+    dbus-run-session -- /usr/bin/wisp-steam-launch /usr/bin/env "LD_PRELOAD=/usr/lib/wispos/libwispos-ldadd.so" \
+        "$steam_root/steamrtarm64/steam" -gamepadui -clientbeta publicbeta \
+        -no-cef-sandbox -cef-ozone-platform=x11 >>"$log_dir/steam.log" 2>&1
+    rc=$?
+    say "Steam exited with status $rc"
+    /usr/bin/wisp-shm-clean
+    case "$rc" in 0|42) sleep 2 ;; *) exit "$rc" ;; esac
+done

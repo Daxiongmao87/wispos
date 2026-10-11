@@ -1,0 +1,59 @@
+#!/bin/sh
+# Applies settings the operator left on the FAT boot partition (/flash/wispos), which any PC can
+# read and edit with the card in a reader. Runs at every boot, before networking and sshd, and is
+# idempotent. Nothing here is required: a card without these files still boots.
+#
+#   wifi.conf          two lines:  ssid=NETWORK NAME   and   psk=PASSPHRASE
+#                      becomes a NetworkManager profile (WPA2-PSK, DHCP), as ROCKNIX's wifictl makes
+#   authorized_keys    OpenSSH public keys allowed for root and for wisp
+CONF=/flash/wispos
+say() { echo "wisp-firstboot: $*" >/dev/kmsg 2>/dev/null; echo "wisp-firstboot: $*"; }
+
+if [ -f "$CONF/wifi.conf" ]; then
+    ssid=$(sed -n 's/^ssid=//p' "$CONF/wifi.conf" | head -n1 | tr -d '\r')
+    psk=$(sed -n 's/^psk=//p' "$CONF/wifi.conf" | head -n1 | tr -d '\r')
+    if [ -n "$ssid" ] && [ -n "$psk" ]; then
+        dir=/storage/.config/NetworkManager/system-connections
+        mkdir -p "$dir"
+        # File name from the SSID with anything unsafe replaced; the SSID itself is stored verbatim inside.
+        file="$dir/wisp-$(printf '%s' "$ssid" | tr -c 'A-Za-z0-9_-' '_').nmconnection"
+        id=$(uuidgen -n @dns -N "wispos-wifi-$ssid" --sha1 2>/dev/null || uuidgen)
+        umask 077
+        cat >"$file" <<EOT
+[connection]
+id=$ssid
+uuid=$id
+type=wifi
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=$ssid
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=$psk
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+EOT
+        chmod 600 "$file"
+        say "Wi-Fi profile written for '$ssid'"
+    else
+        say "wifi.conf needs both ssid= and psk= lines; ignored"
+    fi
+fi
+
+if [ -s "$CONF/authorized_keys" ]; then
+    for home in /storage /storage/home/wisp; do
+        mkdir -p "$home/.ssh"
+        cp "$CONF/authorized_keys" "$home/.ssh/authorized_keys"
+        chmod 700 "$home/.ssh"; chmod 600 "$home/.ssh/authorized_keys"
+    done
+    chown -R wisp:wisp /storage/home/wisp/.ssh
+    say "SSH keys installed for root and wisp"
+fi
+exit 0

@@ -1,0 +1,12 @@
+# DEV BUILDS ONLY. Stops the Steam session when memory is nearly gone, so a stall cannot lock the handheld. See /usr/bin/wisp-dev-watchdog.
+[Unit]
+Description=Dev build: memory watchdog for the Steam session
+After=local-fs.target
+
+[Service]
+ExecStart=/usr/bin/wisp-dev-watchdog
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

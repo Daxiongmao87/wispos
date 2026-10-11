@@ -1,0 +1,2 @@
+This is a WispOS DEVELOPMENT build: it announces itself to a developer machine and accepts a developer SSH key from the boot partition.
+Do not publish or share it.

@@ -1,0 +1,1056 @@
+<!DOCTYPE node PUBLIC
+"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+
+
+<!--
+  Copyright © 2023 Collabora Ltd.
+  Copyright © 2024 Igalia S.L.
+  Copyright © 2024 Valve Corporation.
+  SPDX-License-Identifier: MIT
+-->
+
+<node name="/" xmlns:doc="http://www.freedesktop.org/dbus/1.0/doc.dtd">
+  <!--
+      com.steampowered.SteamOSManager1.AmbientLightSensor1
+      @short_description: Optional interface to interact with the built-in
+      ambient light sensor.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.AmbientLightSensor1">
+
+    <!--
+        AlsCalibrationGain:
+
+        Provides the ALS calibration value.
+
+        Note: Will be -1.0 if ALS calibration is unavailable.
+    -->
+    <property name="AlsCalibrationGain" type="ad" access="read"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.BatteryChargeLimit1
+      @short_description: Optional interface for battery charging limit
+      properties.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.BatteryChargeLimit1">
+
+    <!--
+        MaxChargeLevel:
+
+        The maximum allowable percentage for battery charging. If setting to
+        -1, this will reset to the default.
+    -->
+    <property name="MaxChargeLevel" type="i" access="readwrite"/>
+
+    <!--
+        SuggestedMinimumLimit:
+
+        The suggested minimum value for a frontend to allow setting the max
+        charge level.
+    -->
+    <property name="SuggestedMinimumLimit" type="i" access="read"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.CpuBoost1
+      @short_description: Optional interface adjusting CPU boost state.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.CpuBoost1">
+
+    <!--
+        CpuBoostState:
+
+        Controls the CPU boost state.
+
+        Valid states: 0 = Disabled, 1 = Enabled
+    -->
+    <property name="CpuBoostState" type="u" access="readwrite"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.CpuScaling1
+      @short_description: Optional interface for adjusting CPU scaling.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.CpuScaling1">
+
+    <!--
+        CpuGovernors:
+
+        Enumerate the supported CPU governors on the system.
+    -->
+    <property name="AvailableCpuScalingGovernors" type="as" access="read"/>
+
+    <!--
+        CpuGovernor:
+
+        The current governor used for the system's CPUs. Valid values come from
+        the AvailableCpuGovernors property.
+    -->
+    <property name="CpuScalingGovernor" type="s" access="readwrite"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.CpuScheduler1
+      @short_description: Optional interface for adjusting CPU scheduler.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.CpuScheduler1">
+
+    <!--
+        AvailableCpuSchedulers:
+
+        Enumerate the supported CPU schedulers on the system.
+    -->
+    <property name="AvailableCpuSchedulers" type="as" access="read"/>
+
+    <!--
+        CpuScheduler:
+
+        The current CPU scheduler used for the system's CPUs.
+
+        Valid schedulers can be found in AvailableCpuSchedulers.
+    -->
+    <property name="CpuScheduler" type="s" access="readwrite"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.FactoryReset1
+      @short_description: Optional interface for hardware that has a factory
+      reset functionality.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.FactoryReset1">
+
+    <!--
+        PrepareFactoryReset:
+
+        Perform factory reset of device. Runs steamos-factory-reset script for
+        now.
+
+        @kind: 1 = Clear just user settings, 2 = Clear just OS, 3 = clear both user settings and OS
+        @returns: Status of reset operation.
+
+        Valid statuses: 0 = Unknown, 1 = RebootRequired
+    -->
+    <method name="PrepareFactoryReset">
+      <arg type="u" name="kind" direction="in"/>
+      <arg type="u" name="status" direction="out"/>
+    </method>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.FanControl1
+      @short_description: Optional interface for controlling the fans.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.FanControl1">
+
+    <!--
+        FanControlState:
+
+        Controls whether the OS or the BIOS should manage fan speed.
+
+        Valid states: 0 = BIOS, 1 = OS
+    -->
+    <property name="FanControlState" type="u" access="readwrite"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.FirmwareDebug1
+      @short_description: Optional interface with debugging facilities for the device firmware.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.FirmwareDebug1">
+
+    <!--
+        EcLogging:
+
+        Controls whether EC firmware logging is enabled.
+
+        Valid states: 0 = off, 1 = on
+    -->
+    <property name="EcLogging" type="u" access="readwrite"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.GpuPerformanceLevel1
+      @short_description: Optional interface for generic GPU properties.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.GpuPerformanceLevel1">
+
+    <!--
+        AvailableGpuPerformanceLevels:
+
+        Enumerate the supported GPU performance levels on the system.
+    -->
+    <property name="AvailableGpuPerformanceLevels" type="as" access="read"/>
+
+    <!--
+        GpuPerformanceLevel:
+
+        The current GPU performance level. Valid values come from
+        the AvailableGpuPerformanceLevels property.
+    -->
+    <property name="GpuPerformanceLevel" type="s" access="readwrite"/>
+
+    <!--
+        ManualGpuClock:
+
+        Controls the GPU clock frequency in MHz when GPUPerformanceLevel is set
+        to manual.
+    -->
+    <property name="ManualGpuClock" type="u" access="readwrite"/>
+
+    <!--
+        ManualGpuClockMin:
+
+        Minimum frequency allowed for GPU clocks.
+    -->
+    <property name="ManualGpuClockMin" type="u" access="read"/>
+
+    <!--
+        ManualGpuClockMax:
+
+        Maximum frequency allowed for GPU clocks.
+    -->
+    <property name="ManualGpuClockMax" type="u" access="read"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.GpuPowerProfile1
+      @short_description: Optional interface for GPU power properties.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.GpuPowerProfile1">
+
+    <!--
+        AvailableGpuPowerProfiles:
+
+        Enumerate the supported GPU power profiles available on the system.
+
+        A list of supported profiles.
+    -->
+    <property name="AvailableGpuPowerProfiles" type="as" access="read"/>
+
+    <!--
+        GpuPowerProfile:
+
+        The current GPU power profile. Valid values come from the
+        AvailableGpuPowerProfiles property.
+    -->
+    <property name="GpuPowerProfile" type="s" access="readwrite"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.HdmiCec1
+      @short_description: Optional interface for HDMI-CEC.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.HdmiCec1">
+
+    <!--
+        HdmiCecState:
+
+        The current state of HDMI-CEC features on the system.
+
+        Valid states: 0 = Disabled, 1 = Control Only, 2 = Control And Wake,
+        3 = Extended state (see com.steampowered.SteamOSManager1.HdmiCec2).
+    -->
+    <property name="HdmiCecState" type="u" access="readwrite"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.HdmiCec2
+      @short_description: Optional interface for HDMI-CEC.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.HdmiCec2">
+
+    <!--
+        EnableControl:
+
+        Enable or disable remote controls relaying commands
+    -->
+    <property name="EnableControl" type="b" access="readwrite"/>
+
+    <!--
+        SuspendTv:
+
+        Should the TV be suspended when the device sleeps
+    -->
+    <property name="SuspendTv" type="b" access="readwrite"/>
+
+    <!--
+        SuspendDevice:
+
+        Should the device be suspended when the TV sleeps
+    -->
+    <property name="SuspendDevice" type="b" access="readwrite"/>
+
+    <!--
+        WakeTv:
+
+        Should the TV be woken when the device wakes
+    -->
+    <property name="WakeTv" type="b" access="readwrite"/>
+
+    <!--
+        WakeDevice:
+
+        Should the device be woken when the TV wakes. Note that not all
+        hardware supports this setting. Please see the WakeDeviceSupported
+        property to see if this is supported
+    -->
+    <property name="WakeDevice" type="b" access="readwrite"/>
+
+    <!--
+        WakeDeviceSupported:
+
+        Does the hardware support configuring if the device should be woken
+        when the TV wakes
+    -->
+    <property name="WakeDeviceSupported" type="b" access="read"/>
+
+    <!--
+        MakeActive:
+
+        Wake up any attached TV and make this device the active source
+    -->
+    <method name="MakeActive"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.LowPowerMode1
+      @short_description: Interface for handling a low power mode.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.LowPowerMode1">
+
+    <!--
+        EnterDownloadMode:
+
+        Enter a low power mode for downloads and get a handle that will keep
+        this mode active until all obtained handles are dropped.
+
+        @identifier: A human-readable string to identify who has obtained this handle.
+        @handle: A file handle that must be retained to keep download mode
+        active. When all handles are closed, low power mode is exited.
+    -->
+    <method name="EnterDownloadMode">
+      <arg type="s" name="identifier" direction="in"/>
+      <arg type="h" name="handle" direction="out"/>
+    </method>
+
+    <!--
+        ListDownloadModeHandles
+
+        Get a list of all of the currently open download mode handles.
+
+        @identifiers: A dict of all open download mode handles, as a pair of
+        the identifier passed to EnterDownloadMode and the number of handles
+        requested for that identifier.
+    -->
+    <method name="ListDownloadModeHandles">
+      <arg type="a{su}" name="identifiers" direction="out"/>
+    </method>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.Manager2
+      @short_description: Interface for basic manager control.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.Manager2">
+
+    <!--
+        ReloadConfig:
+
+        Reloads the configuration from disk.
+    -->
+    <method name="ReloadConfig"/>
+
+    <!--
+        DeviceModel:
+
+        A tuple of the device model and variant that SteamOS Manager is running
+        on. If the device or variant isn't known the applicable fields will be
+        "unknown" instead.
+    -->
+    <property name="DeviceModel" type="(ss)" access="read"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.PerformanceProfile1
+      @short_description: Optional interface for platform power properties.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.PerformanceProfile1">
+
+    <!--
+        AvailablePerformanceProfiles:
+
+        Enumerate the supported performance profiles available on the system.
+
+        A list of supported profiles.
+    -->
+    <property name="AvailablePerformanceProfiles" type="as" access="read"/>
+
+    <!--
+        PerformanceProfile:
+
+        The current perrormance profile. Valid values come from the
+        AvailablePerformanceProfiles property.
+    -->
+    <property name="PerformanceProfile" type="s" access="readwrite"/>
+
+    <!--
+        SuggestedDefaultPerformanceProfile:
+
+        The suggested default performance profile for the system.
+    -->
+    <property name="SuggestedDefaultPerformanceProfile" type="s" access="read"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.RemoteInterface1
+      @short_description: Interface for handling "remote" interfaces.
+
+      Remote interfaces are implementations of specific interfaces that SteamOS
+      Manager defines but are implemented in other processes. SteamOS Manager
+      will relay bus communications to those remote processes so there can
+      still be a central bus name for them. See the "Interoperability" section
+      in the README for more information.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.RemoteInterface1">
+
+    <!--
+        RemoteInterfaces:
+
+        A list of interfaces that are being relayed.
+    -->
+    <property name="RemoteInterfaces" type="as" access="read"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.ScreenReader0
+      @short_description: Optional interface for managing a screen reader.
+
+      This interface is considered unstable and may change between verisons.
+      Once it is considered stable it will be renamed to ScreenReader1
+  -->
+  <interface name="com.steampowered.SteamOSManager1.ScreenReader0">
+    <!--
+        Enabled
+
+        True if screen reader is enabled, false otherwise.
+    -->
+    <property name="Enabled" type="b" access="readwrite"/>
+
+    <!--
+        Rate
+
+        The rate of speech output. Valid values are 0 for slowest to 100 for fastest.
+    -->
+    <property name="Rate" type="d" access="readwrite"/>
+
+    <!--
+        Pitch
+
+        The pitch for speech output. Valid values are 0.0 for lowest, and 10.0 for highest.
+    -->
+    <property name="Pitch" type="d" access="readwrite"/>
+
+    <!--
+        Volume
+
+        The volume for speech output. Valid values ar 0.0 for off, 10.0 for highest.
+    -->
+    <property name="Volume" type="d" access="readwrite"/>
+
+    <!--
+        Mode
+
+        Which mode the screen reader should operate in.
+
+        Valid modes: 0 - Browse mode, 1 - Focus mode.
+    -->
+    <property name="Mode" type="u" access="readwrite"/>
+
+    <!--
+        Voice
+
+        The voice to use for screen reading.
+
+        Valid voices can be found from GetVoicesForLocale
+    -->
+    <property name="Voice" type="s" access="readwrite"/>
+
+    <!--
+        Voice Locales
+
+        The list of known voice locales
+    -->
+    <property name="VoiceLocales" type="as" access="read"/>
+
+    <!--
+        Map of voice names per locale
+    -->
+    <property name="VoicesForLocale" type="a{sas}" access="read"/>
+
+    <!--
+        Trigger Action
+
+        Forward a user interaction event to the screen reader service.
+
+        @action: The action genereated via user input. Valid values:
+          0 = Stop Talking
+          1 = Read Next Word,
+          2 = Read Previous Word,
+          3 = Read Next Item,
+          4 = Read Previous Item,
+          5 = Move To Next Landmark,
+          6 = Move To Previous Landmark,
+          7 = Move To Next Heading,
+          8 = Move To Previous Heading,
+          9 = Toggle between Browse mode and Focus mode,
+
+        @timestamp: refers to the time the user interaction event
+        that triggered this event happened. E.g. when the user pressed
+        a key to request this action. (Encoded as nanoseconds since the
+        start of CLOCK_MONOTONIC_RAW).
+    -->
+    <method name="TriggerAction">
+      <arg type="u" name="action" direction="in"/>
+      <arg type="t" name="timestamp" direction="in"/>
+    </method>
+
+  </interface>
+  <!--
+      com.steampowered.SteamOSManager1.ScreenReader1
+      @short_description: Optional interface for managing a screen reader.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.ScreenReader1">
+    <!--
+        Enabled
+
+        True if screen reader is enabled, false otherwise.
+    -->
+    <property name="Enabled" type="b" access="readwrite"/>
+
+    <!--
+        Rate
+
+        The rate of speech output. Valid values are 0 for slowest to 100 for fastest.
+    -->
+    <property name="Rate" type="d" access="readwrite"/>
+
+    <!--
+        Pitch
+
+        The pitch for speech output. Valid values are 0.0 for lowest, and 10.0 for highest.
+    -->
+    <property name="Pitch" type="d" access="readwrite"/>
+
+    <!--
+        Volume
+
+        The volume for speech output. Valid values ar 0.0 for off, 10.0 for highest.
+    -->
+    <property name="Volume" type="d" access="readwrite"/>
+
+    <!--
+        Mode
+
+        Which mode the screen reader should operate in.
+
+        Valid modes: browse - Browse mode, focus - Focus mode.
+    -->
+    <property name="Mode" type="s" access="readwrite"/>
+
+    <!--
+        Voice Locales
+
+        The list of known voice locales
+    -->
+    <property name="VoiceLocales" type="as" access="read"/>
+
+    <!--
+        The currently used voice locale.
+
+        Voices property only gives list for this locale when used.
+        Valid VoiceLocales can be found from the VoiceLocales property.
+    -->
+    <property name="VoiceLocale" type="s" access="readwrite"/>
+
+    <!--
+        Voice
+
+        The voice to use for screen reading.
+
+        Valid voices can be found from Voices once a VoiceLocale has been set.
+    -->
+    <property name="Voice" type="s" access="readwrite"/>
+
+    <!--
+        Get the list of voices for the current locale
+
+        @voices: A list of voice names for the current locale.
+    -->
+    <method name="GetVoices">
+      <arg type="as" name="voices" direction="out"/>
+    </method>
+
+    <!--
+        Get the list of voices for a given locale
+
+        @locale: The locale to get voices for.
+        @voices: A list of voice names for the given locale.
+    -->
+    <method name="GetVoicesForLocale">
+      <arg type="s" name="locale" direction="in"/>
+      <arg type="as" name="voices" direction="out"/>
+    </method>
+
+    <!--
+        Trigger Action
+
+        Forward a user interaction event to the screen reader service.
+
+        @action: The action genereated via user input. Valid values:
+          stop_talking = Stop Talking
+          read_next_word = Read Next Word,
+          read_previous_word = Read Previous Word,
+          read_next_item = Read Next Item,
+          read_previous_item = Read Previous Item,
+          move_to_next_landmark = Move To Next Landmark,
+          move_to_previous_landmark = Move To Previous Landmark,
+          move_to_next_heading = Move To Next Heading,
+          move_to_previous_heading = Move To Previous Heading,
+          toggle_mode = Toggle between Browse mode and Focus mode,
+
+        @timestamp: refers to the time the user interaction event
+        that triggered this event happened. E.g. when the user pressed
+        a key to request this action. (Encoded as nanoseconds since the
+        start of CLOCK_MONOTONIC_RAW).
+    -->
+    <method name="TriggerAction">
+      <arg type="s" name="action" direction="in"/>
+      <arg type="t" name="timestamp" direction="in"/>
+    </method>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.SessionManagement1
+      @short_description: Optional interface for managing the logged in and
+      default sessions.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.SessionManagement1">
+
+    <!--
+      SwitchToDesktopMode:
+
+      Log out and switch to the default desktop mode session
+    -->
+    <method name="SwitchToDesktopMode"/>
+
+    <!--
+      SwitchToGameMode:
+
+      Log out and switch to the game mode session
+    -->
+    <method name="SwitchToGameMode"/>
+
+    <!--
+      SwitchToLoginMode:
+
+      Log out and switch to a given mode.
+
+      @type: The login mode type. Valid values are `game` and `desktop`.
+    -->
+    <method name="SwitchToLoginMode">
+      <arg type="s" name="type" direction="in"/>
+    </method>
+
+    <!--
+      SwitchToDesktopSession:
+
+      Log out and switch to the specified desktop mode session
+
+      @session: The name of the session to switch to. This must be a valid
+      session name as listed by ValidDesktopSessions.
+    -->
+    <method name="SwitchToDesktopSession">
+      <arg type="s" name="sessions" direction="in"/>
+    </method>
+
+    <!--
+      DefaultDesktopSession:
+
+      The name of the default desktop session. Valid values are listed by the
+      ValidDesktopSessions method.
+    -->
+    <property name="DefaultDesktopSession" type="s" access="readwrite"/>
+
+    <!--
+      DefaultLoginMode:
+
+      The default login mode on boot. Valid values are `game` and `desktop`.
+    -->
+    <property name="DefaultLoginMode" type="s" access="readwrite"/>
+
+    <!--
+      ValidDesktopSessions:
+
+      Get a list of valid desktop sessions
+
+      @sessions: A list of desktop session names that can be used for the
+      desktop login mode.
+    -->
+    <method name="ValidDesktopSessions">
+      <arg type="as" name="sessions" direction="out"/>
+    </method>
+
+    <!--
+      CleanTemporarySessions:
+
+      For internal use only. This cleans up any temporary files left over by
+      temporarily switching modes.
+    -->
+    <method name="CleanTemporarySessions"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.Storage1
+      @short_description: Optional interface for managing storage devices
+      and filesystems.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.Storage1">
+
+    <!--
+        FormatDevice:
+
+        Format and optionally validate a storage device to a steam compatible
+        filesystem.
+
+        @device: Which device to format, e.g. /dev/mmcblk0.
+        @label: Filesystem label to assign to the formatted device.
+        @validate: When set runs common checks for conterfeit flash media
+        before formatting, i.e. f3probe.
+        @jobpath: An object path that can be used to pause/resume/cancel the
+        operation.
+    -->
+    <method name="FormatDevice">
+      <arg type="s" name="device" direction="in"/>
+      <arg type="s" name="label" direction="in"/>
+      <arg type="b" name="validate" direction="in"/>
+      <arg type="o" name="jobpath" direction="out"/>
+    </method>
+
+    <!--
+        TrimDevices:
+
+        Perform fstrim on relevant disk devices.
+
+        Calling this over fstrim is is important as some devices are not safe
+        to trim unless some kernel quirks are available.
+
+        @jobpath: An object path that can be used to pause/resume/cancel the
+        operation.
+    -->
+    <method name="TrimDevices">
+      <arg type="o" name="jobpath" direction="out"/>
+    </method>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.TdpLimit1
+      @short_description: Optional interface for TDP limits.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.TdpLimit1">
+
+    <!--
+        TdpLimit:
+
+        Controls the TDP limit.
+
+        Valid states: In range of [ TdpLimitMin, TdpLimitMax ]
+    -->
+    <property name="TdpLimit" type="u" access="readwrite"/>
+
+    <!--
+        TdpLimitMin:
+
+        Minimum allowed TDP Limit.
+    -->
+    <property name="TdpLimitMin" type="u" access="read"/>
+
+    <!--
+        TdpLimitMax:
+
+        Maximum allowed TDP Limit.
+    -->
+    <property name="TdpLimitMax" type="u" access="read"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.UpdateBios1
+      @short_description: Optional interface for hardware that can update its
+      BIOS from a running operating system.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.UpdateBios1">
+
+    <!--
+        UpdateBios:
+
+        Perform a BIOS update.
+
+        @jobpath: An object path that can be used to pause/resume/cancel the
+        operation.
+    -->
+    <method name="UpdateBios">
+      <arg type="o" name="jobpath" direction="out"/>
+    </method>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.UpdateBios1
+      @short_description: Optional interface for hardware that can update a
+      dock from a running operating system.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.UpdateDock1">
+
+    <!--
+        UpdateDock:
+
+        Perform a Dock Firmware update.
+
+        @jobpath: An object path that can be used to pause/resume/cancel the
+        operation.
+    -->
+    <method name="UpdateDock">
+      <arg type="o" name="jobpath" direction="out"/>
+    </method>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.WifiBackend1
+      @short_description: Optional interface for getting and setting Wi-Fi backend.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.WifiBackend1">
+    <!--
+        WifiBackend:
+
+        Controls which Wi-Fi backend is used by NetworkManager.
+
+        Valid states: iwd, wpa_supplicant
+    -->
+    <property name="WifiBackend" type="s" access="readwrite"/>
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.WifiDebug1
+      @short_description: Optional interface for debugging Wi-Fi chips.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.WifiDebug1">
+
+    <!--
+        WifiDebugModeState:
+
+        Whether Wi-Fi debug mode is currently enabled.
+
+        Valid states: 0 = Disabled, 1 = Tracing.
+    -->
+    <property name="WifiDebugModeState" type="u" access="read"/>
+
+    <!--
+        SetWifiDebugMode:
+
+        @mode: 0 = Disabled, 1 = Tracing.
+        @options: A dictionary of options for the debug mode.
+            buffer_size (u, optional): The size of the kernel buffer per core,
+                in bytes.
+
+        Enable/Disable Wi-Fi debug mode.
+    -->
+    <method name="SetWifiDebugMode">
+      <arg type="u" name="mode" direction="in"/>
+      <arg type="a{sv}" name="options" direction="in"/>
+    </method>
+
+    <!--
+        WifiBackend:
+
+        Controls which Wi-Fi backend is used by NetworkManager.
+
+        Valid states: iwd, wpa_supplicant
+    -->
+    <property name="WifiBackend" type="s" access="readwrite"/>
+
+    <!--
+        CaptureDebugTraceOutput:
+
+        @path: The path to the captured file. This will be world-readable and
+        in a temporary directory, so make sure to move it to a permanent
+        location if keeping it is desired.
+
+        Extract the Wi-Fi trace to a file, if present.
+    -->
+    <method name="CaptureDebugTraceOutput">
+      <arg type="s" name="path" direction="out"/>
+    </method>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.WifiDebugDump1
+      @short_description: Optional interface for generating Wi-Fi driver dumps.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.WifiDebugDump1">
+
+    <!--
+        GenerateDebugDump:
+
+        @path: The path to the generated file. This will be world-readable and
+        in a temporary directory, so make sure to move it to a permanent
+        location if keeping it is desired.
+
+        Generate a Wi-Fi driver dump and export it to a file.
+    -->
+    <method name="GenerateDebugDump">
+      <arg type="s" name="path" direction="out"/>
+    </method>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.WifiPowerManagement1
+      @short_description: Optional interface for Wi-Fi power management.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.WifiPowerManagement1">
+
+    <!--
+        WifiPowerManagementState:
+
+        Controls the Wi-Fi chip's power management features.
+
+        Valid states: 0 = Disabled, 1 = Enabled
+    -->
+    <property name="WifiPowerManagementState" type="u" access="readwrite"/>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.Job1
+      @short_description: Interface to control a job
+  -->
+  <interface name="com.steampowered.SteamOSManager1.Job1">
+
+      <!--
+        Pause:
+
+        Pauses the job.
+      -->
+      <method name="Pause"/>
+
+      <!--
+        Resume:
+
+        Resumes the job.
+      -->
+      <method name="Resume"/>
+
+      <!--
+        Cancel:
+
+        Cancel the operation.
+
+        @force Use SIGKILL if true, SIGTERM otherwise.
+      -->
+      <method name="Cancel">
+        <arg type="b" name="force" direction="in"/>
+      </method>
+
+      <!--
+        Wait:
+
+        Wait for process to end and get exit code, resuming if paused.
+
+        @result: The exit code, or negative signal number if the process
+        exited via signal.
+      -->
+      <method name="Wait">
+        <arg type="i" name="result" direction="out"/>
+      </method>
+
+      <!--
+        ExitCode:
+
+        Get the exit code of the process if it's already exited.
+
+        @result: The exit code, or negative signal number if the process
+        exited via signal.
+      -->
+      <method name="ExitCode">
+        <arg type="i" name="result" direction="out"/>
+      </method>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.UdevEvents
+      @short_description: Specific udev events that are monitored to be
+      bubbled up to the desktop interface.
+  -->
+  <interface name="com.steampowered.SteamOSManager1.UdevEvents1">
+
+      <!--
+        OverCurrent:
+
+        Signals that a USB port has had an over-current event.
+
+        @devpath: The path in /sys of the USB device.
+        @port: The associated port.
+        @count: The number of times this devices has had an over-current
+        event.
+      -->
+      <signal name="UsbOverCurrent">
+        <arg type="s" name="devpath"/>
+        <arg type="s" name="port"/>
+        <arg type="t" name="count"/>
+      </signal>
+
+  </interface>
+
+  <!--
+      com.steampowered.SteamOSManager1.JobManager1
+      @short_description: Interface to manage jobs
+  -->
+  <interface name="com.steampowered.SteamOSManager1.JobManager1">
+
+      <!--
+        JobStarted:
+
+        Signals that a job has started
+
+        @job: The object path of the job
+      -->
+      <signal name="JobStarted">
+        <arg type="o" name="job"/>
+      </signal>
+
+  </interface>
+
+</node>

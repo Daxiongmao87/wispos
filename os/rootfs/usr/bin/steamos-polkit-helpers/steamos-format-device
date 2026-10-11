@@ -1,0 +1,5 @@
+#!/bin/sh
+# What Steam's "Format SD Card" runs (steamos-format-device, strings in steamui.so / steamclient.so). Formats and mounts ONLY the card in the TF2 slot: all of the work, and the
+# reasons it cannot touch the boot card, are in /usr/lib/wispos/tf2-card. The call is logged first (docs/WISPOS-NOTES.md, "SD card formatter") because Steam's real
+# arguments are still unknown.
+exec /usr/lib/wispos/tf2-card steam-format "${0##*/}" "$@"

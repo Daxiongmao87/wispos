@@ -1,0 +1,384 @@
+#!/usr/bin/python3
+"""First-run installer for the Steam client (run by wisp-setup; also usable by hand).
+
+    steam-install [--lock FILE] [--tool-lock FILE] [--runtime DIR] [--cache DIR] [--min-free-mib N] [--tool-min-free-mib N]
+
+Downloads the Steam ARM64 client pinned in the lock (native-client.lock.json: URL, size and sha256 per component), verifies
+every file, extracts it with the same safe extractor the build tooling uses
+(native_client.py, one authoritative copy), re-applies the one local change (steamwebhelper.sh must not pin CPUs 2-6; the H700
+has four), and writes RUNTIME/READY last. The Steam client is not part of the OS image: it is Valve's software and updates itself.
+
+Steam's own manifest URL is deliberately not used: it always serves the current release, so a hash pinned to it stops matching
+at the next Steam update (it did, within a week of the lock being made). The component URLs are content-addressed, so the pinned
+versions stay downloadable, and each file is checked against its own pinned hash. Steam brings itself up to date once it runs.
+
+Resumable: a download is kept as CACHE/<file>.part and continued with an HTTP Range request; a server that ignores Range
+restarts that file. A file that fails its hash is deleted and the install stops. Re-running after any interruption continues.
+
+What it owns, and what it never touches (docs/WISPOS-NOTES.md, 2026-10-10): `runtime/steam` is also Steam's own data directory (games, userdata, config, logs, caches, other
+compatibility tools: ~/.local/share/Steam resolves to it). The installer owns ONLY the files of the client package (listed in meta/client-files.json after an install) and its
+compatibility tool's folder. Replacing the client (a new lock version) never deletes the directory: it checks for conflicts first (changing nothing), removes READY, removes only
+manifest files the new package no longer ships, merges the new files in one by one, writes the manifest and the lock, and writes READY last. A device installed before the
+manifest existed gets the merge without any deletion. Anything else under runtime/steam is the environment's, not the installer's.
+
+The same run also installs WispOS's compatibility tool (the ARMv8.0 Proton build pinned in compat-tool.lock.json) into Steam's compatibilitytools.d, where Steam
+never validates or updates it: Valve's own ARM64 Proton is re-validated by Steam, which undoes any change made to it, and its binaries need atomics this CPU lacks
+(docs/WISPOS-NOTES.md, "DESIGN FINDING"). It is a .tar.zst of about 400 MB (1.9 GiB unpacked): hash-checked, resumable like the client, unpacked as a stream through
+tarfile's 'data' filter (no absolute or .. paths, no links out of the tree, no devices, nothing outside its own folder). An older install that has Steam but not the
+tool downloads only the tool. A missing --tool-lock file means no tool step. The tool is part of "installed": READY is written last either way.
+
+Output, one line each on stdout, for the screen to read:
+    phase <download|extract|finish>
+    progress <bytes done> <bytes total> <component>
+    error <one line a person can read>
+    done
+Exit status 0 only after `done`.
+"""
+import argparse
+import contextlib
+import hashlib
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path, PurePosixPath
+
+LIB = Path(__file__).resolve().parent
+OLD_AFFINITY = b'exec taskset 0x7c $(pwd)/steamwebhelper "$@" &> ~/.steam/steam/logs/steamwebhelper.log'
+NEW_AFFINITY = b'exec "$(pwd)/steamwebhelper" "$@" &> ~/.steam/steam/logs/steamwebhelper.log'
+WRAPPER = 'steamrtarm64/steamwebhelper.sh'
+CHUNK = 1 << 18
+
+
+def say(*parts):
+    print(*parts, flush=True)
+
+
+class Failure(Exception):
+    """An error with a message fit to show on screen."""
+
+
+def load_extractor():
+    spec = importlib.util.spec_from_file_location('native_client', LIB / 'native_client.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for block in iter(lambda: stream.read(CHUNK), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def download(url, expected_sha, size, destination, progress, server="Steam's servers"):
+    """Fetch url to destination (verified, atomically published), continuing a .part file. size None = unknown.
+    progress(n) is called with the bytes of this file present so far. server: who to name in the error lines."""
+    destination = Path(destination)
+    if destination.exists():
+        if sha256_of(destination) == expected_sha and (size is None or destination.stat().st_size == size):
+            progress(destination.stat().st_size)
+            return
+        destination.unlink()
+    part = destination.with_name(destination.name + '.part')
+    have = part.stat().st_size if part.exists() else 0
+    if size is not None and have > size:
+        part.unlink(); have = 0
+    request = urllib.request.Request(url, headers={'Range': f'bytes={have}-'} if have else {})
+    try:
+        response = urllib.request.urlopen(request, timeout=60)
+    except urllib.error.HTTPError as error:
+        if error.code == 416 and have:               # already complete or the partial is wrong: judge it by its hash
+            response = None
+        else:
+            raise Failure(f'{server} refused the download ({error.code}).') from error
+    except (urllib.error.URLError, OSError) as error:
+        raise Failure(f'Lost the connection to {server}.') from error
+    if response is not None:
+        with response:
+            if have and response.status != 206:      # the server ignored Range: start this file again
+                have = 0
+            progress(have)
+            try:
+                with open(part, 'ab' if have else 'wb') as output:
+                    while True:
+                        block = response.read(CHUNK)
+                        if not block:
+                            break
+                        output.write(block)
+                        have += len(block)
+                        progress(have)
+            except (urllib.error.URLError, OSError) as error:
+                raise Failure(f'Lost the connection to {server}.') from error
+    if size is not None and part.stat().st_size != size:
+        raise Failure('The download was cut short. It will continue where it stopped.')
+    if sha256_of(part) != expected_sha:
+        part.unlink()
+        raise Failure('A downloaded file failed its check and was discarded. Try again.')
+    os.replace(part, destination)
+
+
+def apply_affinity_patch(steam_dir):
+    path = Path(steam_dir) / WRAPPER
+    data = path.read_bytes()
+    if data.count(OLD_AFFINITY) != 1:
+        raise Failure('Steam\'s start script is not what this version of WispOS expects.')
+    path.write_bytes(data.replace(OLD_AFFINITY, NEW_AFFINITY))
+
+
+def tool_ready(runtime, tool):
+    """True when exactly the pinned build of the compatibility tool is installed under Steam's directory (the marker is written last)."""
+    root = Path(runtime) / 'steam' / 'compatibilitytools.d' / tool['name']
+    marker = Path(runtime) / 'meta' / 'compat-tool.sha256'
+    return (root / 'compatibilitytool.vdf').exists() and (root / 'proton').exists() \
+        and marker.exists() and marker.read_text().strip() == tool['sha256']
+
+
+@contextlib.contextmanager
+def zstd_stream(path):
+    """The decompressed bytes of a .zst file as a stream: Python 3.14's own zstd module (the device has it), else the zstd program (a host without the module)."""
+    try:
+        from compression import zstd
+    except ImportError:
+        zstd = None
+    if zstd is not None:
+        with zstd.open(path, 'rb') as stream:
+            yield stream
+        return
+    try:
+        process = subprocess.Popen(['zstd', '-dc', '--', str(path)], stdout=subprocess.PIPE)
+    except FileNotFoundError as error:
+        raise Failure('This system cannot unpack the download (no zstd).') from error
+    try:
+        yield process.stdout
+        while process.stdout.read(CHUNK):             # a tar stream ends before its padding does: let zstd finish so its exit status means something
+            pass
+    finally:
+        process.stdout.close()
+        status = process.wait()
+    if status != 0:
+        raise Failure('The compatibility tool that was downloaded is damaged. Try again.')
+
+
+def extract_tool(archive, name, staging):
+    """Unpack the verified tool archive into staging/<name>/ without trusting it: tarfile's 'data' filter refuses absolute and .. paths, links that leave the tree,
+    devices and setuid bits, and everything must sit under <name>/ (the archive's own './' entry is skipped). The one thing the filter would refuse in the real archive,
+    absolute links into /dev (Wine's COM-port entries), is skipped rather than created: the installed tree holds no absolute link at all."""
+    def only_the_tool(member, dest):
+        parts = PurePosixPath(member.name).parts
+        if not parts:
+            return None
+        if parts[0] != name:
+            raise Failure('The compatibility tool that was downloaded is not what this version of WispOS expects.')
+        if member.issym() and member.linkname.startswith('/dev/') and '/../' not in member.linkname:
+            return None                                # Wine's default prefix lists COM ports as dosdevices/comNN -> /dev/ttySNN (32 of them in the real archive); Wine makes its own
+        return tarfile.data_filter(member, dest)
+    staging.mkdir(parents=True)
+    try:
+        try:
+            with zstd_stream(archive) as stream, tarfile.open(fileobj=stream, mode='r|') as tar:
+                tar.extractall(staging, filter=only_the_tool)
+        except tarfile.TarError as error:             # includes the filter's refusals
+            raise Failure('The compatibility tool that was downloaded could not be unpacked safely.') from error
+        for needed in ('proton', 'compatibilitytool.vdf'):
+            if not (staging / name / needed).is_file():
+                raise Failure('The compatibility tool that was downloaded is not what this version of WispOS expects.')
+    except BaseException:                              # a refused or failed unpack leaves nothing behind
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def place_tool(runtime, tool, staging):
+    """Move the unpacked tool into Steam's compatibilitytools.d (replacing a half-finished or older copy) and record which archive it came from, last."""
+    parent = Path(runtime) / 'steam' / 'compatibilitytools.d'
+    parent.mkdir(parents=True, exist_ok=True)
+    target = parent / tool['name']
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists():
+        shutil.rmtree(target)
+    os.replace(staging / tool['name'], target)
+    meta = Path(runtime) / 'meta'
+    meta.mkdir(exist_ok=True)
+    (meta / 'compat-tool.sha256').write_text(tool['sha256'] + '\n')
+    shutil.rmtree(staging, ignore_errors=True)
+
+
+def inside(path, root):
+    """True when path (symlinks resolved) lies within root (symlinks resolved)."""
+    return Path(os.path.realpath(path)).is_relative_to(os.path.realpath(root))
+
+
+def package_paths(root):
+    """(directories, files and symlinks) under root as sorted relative paths; symlinks are listed as files and never followed."""
+    dirs, files = [], []
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel = os.path.relpath(dirpath, root)
+        for name in dirnames:
+            path = os.path.join(dirpath, name)
+            (files if os.path.islink(path) else dirs).append(os.path.normpath(os.path.join(rel, name)))
+        files.extend(os.path.normpath(os.path.join(rel, name)) for name in filenames)
+    return sorted(dirs), sorted(files)
+
+
+def old_manifest(path):
+    """The relative paths of the client files an earlier install recorded, or None (no manifest: a device installed before it existed, or an unreadable one)."""
+    try:
+        files = json.loads(Path(path).read_text())['files']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    ok = [f for f in files if isinstance(f, str) and f and not os.path.isabs(f) and '..' not in Path(f).parts] if isinstance(files, list) else None
+    return ok
+
+
+def replace_client(runtime, staging, lock_path, version):
+    """Put the staged client package into runtime/steam without ever deleting what the package does not own (see the module docstring). Raises Failure, with nothing
+    changed, if a package file would have to replace something that is not part of the package."""
+    runtime, staging = Path(runtime), Path(staging)
+    final, meta, ready = runtime / 'steam', runtime / 'meta', runtime / 'READY'
+    manifest = meta / 'client-files.json'
+    dirs, files = package_paths(staging)
+    # 1. look before touching anything: no package path may need to replace something that is not part of the package
+    for rel in dirs + files:
+        cur = final
+        for part in Path(rel).parts[:-1]:                  # every folder above it that already exists must be a real folder inside Steam's directory
+            cur = cur / part
+            if os.path.lexists(cur) and (not os.path.isdir(cur) or not inside(cur, final)):
+                raise Failure('The Steam client does not fit the folder it is being installed into. Nothing was changed.')
+        dest = final / rel
+        if os.path.lexists(dest):
+            if rel in dirs: clash = not os.path.isdir(dest) or not inside(dest, final)      # a package folder over a file (or a link out of the tree)
+            else: clash = os.path.isdir(dest) and not os.path.islink(dest)                    # a package file over a real folder (games, user data ...)
+            if clash:
+                raise Failure('The Steam client does not fit the folder it is being installed into. Nothing was changed.')
+    # 2. the client is about to be in two versions at once: the session must not start Steam in that state
+    if ready.exists():
+        ready.unlink(); os.sync()
+    # 3. remove only what an earlier install put there and this package no longer ships
+    previous = old_manifest(manifest)
+    if previous:
+        keep = set(files)
+        gone = [rel for rel in previous if rel not in keep]
+        for rel in gone:
+            path = final / rel
+            if os.path.lexists(path) and not (os.path.isdir(path) and not os.path.islink(path)) and inside(path.parent, final):
+                path.unlink()
+        for rel in sorted({str(parent) for rel in gone for parent in Path(rel).parents if str(parent) != '.'}, key=lambda r: -len(r)):
+            try: os.rmdir(final / rel)                     # only if empty: never removes anything with data in it
+            except OSError: pass
+    # 4. merge the new package in, one file at a time (each step is atomic and the whole is repeatable)
+    final.mkdir(parents=True, exist_ok=True)
+    for rel in dirs:
+        (final / rel).mkdir(parents=True, exist_ok=True)
+    for rel in files:
+        dest = final / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staging / rel, dest)
+    shutil.rmtree(staging, ignore_errors=True)
+    # 5. what the installer now owns, and which version it is
+    meta.mkdir(exist_ok=True)
+    temporary = manifest.with_name(manifest.name + '.new')
+    temporary.write_text(json.dumps({'version': version, 'files': files}))
+    os.replace(temporary, manifest)
+    shutil.copyfile(lock_path, meta / 'native-client.lock.json')
+
+
+def install(lock_path, runtime, cache, min_free_mib, tool_lock=None, tool_min_free_mib=2560):
+    lock = json.loads(Path(lock_path).read_text())
+    tool = json.loads(Path(tool_lock).read_text()) if tool_lock and Path(tool_lock).exists() else None
+    runtime, cache = Path(runtime), Path(cache)
+    ready = runtime / 'READY'
+    steam_done = ready.exists() and (runtime / 'meta' / 'native-client.lock.json').exists() \
+        and json.loads((runtime / 'meta' / 'native-client.lock.json').read_text()).get('version') == lock['version'] \
+        and (runtime / 'steam' / 'steamrtarm64' / 'steam').exists()
+    tool_done = tool is None or tool_ready(runtime, tool)                       # the tool lives in compatibilitytools.d, which a client replacement never touches
+    if steam_done and tool_done:
+        say('done'); return
+    components = [] if steam_done else list(lock['components'])
+    if not tool_done:
+        components.append({'name': tool['name'], 'url': tool['url'], 'size': tool['size'], 'sha256': tool['sha256'], 'server': 'the download server'})
+    total = sum(c['size'] for c in components)
+    cache.mkdir(parents=True, exist_ok=True); runtime.mkdir(parents=True, exist_ok=True)
+    # Compressed archives and the extracted client (a little larger) exist at once, so ask for ~3 GiB for Steam and ~2.5 GiB for the tool (400 MB + 1.9 GiB).
+    needed_mib = (0 if steam_done else min_free_mib) + (0 if tool_done else tool_min_free_mib)
+    stat = os.statvfs(runtime)
+    free_mib = stat.f_bavail * stat.f_frsize // (1 << 20)
+    if free_mib < needed_mib:
+        raise Failure(f'Not enough free space on the card ({free_mib} MiB free, {needed_mib} MiB needed).')
+
+    say('phase download')
+    last = [0.0]
+
+    def reporter(base, name):
+        def progress(n):
+            now = time.monotonic()
+            if now - last[0] >= 0.25 or base + n >= total:
+                last[0] = now
+                say('progress', base + n, total, name)
+        return progress
+
+    base = 0
+    for component in components:
+        download(component['url'], component['sha256'], component['size'], cache / component['url'].rsplit('/', 1)[1],
+                 reporter(base, component['name']), **({'server': component['server']} if 'server' in component else {}))
+        base += component['size']
+        say('progress', base, total, component['name'])
+
+    say('phase extract')
+    staging, tool_staging = runtime / 'steam.installing', runtime / 'tool.installing'
+    if not steam_done:
+        extractor = load_extractor()
+        if staging.exists():
+            shutil.rmtree(staging)
+        for component in lock['components']:
+            extractor.extract(cache / component['url'].rsplit('/', 1)[1], staging)
+        apply_affinity_patch(staging)
+        try:
+            extractor.verify_arm64(staging)
+        except ValueError as error:
+            raise Failure('The Steam client that was downloaded is not for this device.') from error
+    if not tool_done:
+        if tool_staging.exists():
+            shutil.rmtree(tool_staging)
+        extract_tool(cache / tool['url'].rsplit('/', 1)[1], tool['name'], tool_staging)
+
+    say('phase finish')
+    if not steam_done:
+        replace_client(runtime, staging, lock_path, lock['version'])
+    if not tool_done:
+        place_tool(runtime, tool, tool_staging)
+    os.sync()
+    ready.write_text('Ready\n')            # last: the session unit starts Steam only when this exists
+    os.sync()
+    shutil.rmtree(cache, ignore_errors=True)
+    say('done')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--lock', default='/usr/share/wispos/native-client.lock.json')
+    parser.add_argument('--tool-lock', default='/usr/share/wispos/compat-tool.lock.json')
+    parser.add_argument('--runtime', default='/storage/wispos/runtime')
+    parser.add_argument('--cache', default='/storage/wispos/cache/steam-client')
+    parser.add_argument('--min-free-mib', type=int, default=3072)
+    parser.add_argument('--tool-min-free-mib', type=int, default=2560)
+    args = parser.parse_args()
+    try:
+        install(args.lock, args.runtime, args.cache, args.min_free_mib, args.tool_lock, args.tool_min_free_mib)
+    except Failure as error:
+        say('error', error); return 1
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        say('error', f'Could not install Steam ({type(error).__name__}: {error}).'); return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

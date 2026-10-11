@@ -1,0 +1,9 @@
+# Runs wisp-wow64-valve (copy Valve's tested wow64.dll into the community Proton tool once Steam has installed Valve's Proton app). Started by wisp-wow64-valve.path whenever Steam
+# rewrites that app's manifest, so the copy does not wait for the next Steam restart. Idempotent and quick; Steam rewrites the manifest often while it downloads, hence no start limit.
+[Unit]
+Description=WispOS copy of Valve's wow64.dll into the compatibility tool
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/wisp-wow64-valve

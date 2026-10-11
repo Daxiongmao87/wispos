@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "purpose": "Preserve the platform that the operator reported booted fully on the 1 GiB RG34XXSP; WispOS additions belong on STORAGE",
+  "release": "20261001",
+  "source_commit": "c445081a59518f37d9776e5412dd7b14910696f7",
+  "asset": "ROCKNIX-H700.aarch64-20261001-DDR3.img.gz",
+  "url": "https://github.com/ROCKNIX/distribution/releases/download/20261001/ROCKNIX-H700.aarch64-20261001-DDR3.img.gz",
+  "compressed_sha256": "222b1f8172ab5b4fef6b4b23c0482a474789cf83542a6d2e5f45dfbbf2ae1359",
+  "original_image_sha256": "6089cd9a5aacf7b36a6c438ca73be76be90193060c1254b030448435b5f8f5b8",
+  "prepared_v2_image_sha256": "973a8a6ed847fa7971df927f48d45dbdd43363cc6c57bbee6132ed006dbf2358",
+  "hardware_report": {
+    "date": "2026-10-03",
+    "device": "RG34XXSP",
+    "ram_bytes": 1073741824,
+    "required_bootloader": "DDR3",
+    "selected_panel": "anbernic,rg34xx-sp-v2-panel",
+    "result": "Operator confirmed readable ROCKNIX and completed frontend boot, then powered off and returned the card",
+    "causation": "Why the prior failed display test cleared is not established"
+  },
+  "firmware_region": {
+    "offset": 512,
+    "bytes": 16776704,
+    "sha256": "9ead57411fa0612141e7185c0dd406368388865e7ce1afc5867068cc62802fcf",
+    "note": "Exclude mutable MBR sector zero; preserve all remaining bytes before BOOT"
+  },
+  "partitions": {
+    "boot_offset": 16777216,
+    "boot_bytes": 2147483648,
+    "storage_offset": 2164260864,
+    "storage_min_bytes": 33554432
+  },
+  "files": {
+    "/KERNEL": {"bytes": 31877128, "sha256": "a349c7239839093f47dd75ebcde7a20796b84aed742e13b9c400fed7edbfadb3"},
+    "/SYSTEM": {"bytes": 1239896064, "sha256": "df90f0eb09721ab7fa52aaf2de0c75f27c24e38e5d86a39c5d7d9426e64fc279"},
+    "/dtb.img": {"bytes": 50460, "sha256": "345e4cd1477c3137b391b2e013401dc1b4a881bd22d32204686c185770c1bc54"},
+    "/overlays/sun50i-h700-anbernic-rg35xx-2024-ddr3.dtbo": {"bytes": 281, "sha256": "e474b4b60aeaad6c785fa01de4693f3ed0a3a2aa7d20dd640bb1452fbeca5072"},
+    "/extlinux/extlinux.conf": {"bytes": 225, "sha256": "f3527a1d60b609ff60db0522ddd6eb5243de0975476878e36cf44c4a57fb1dcd"}
+  }
+}

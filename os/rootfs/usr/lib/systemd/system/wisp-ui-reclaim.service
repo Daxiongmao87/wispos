@@ -1,0 +1,22 @@
+# The Steam UI's memory ceiling (operator-locked plan, docs/WISPOS-NOTES.md "Steam UI memory: decisions", item 1): the UI web helpers live in a cgroup whose memory.high drops while a
+# game runs, so the kernel pushes the hidden UI's cold pages to zram before it touches the game's. It must be running BEFORE Steam starts: pages are charged to the cgroup that was
+# current when they were allocated, so helpers have to be moved while young. The ceilings are the program's own defaults (os/reclaim/wisp-ui-reclaim.c, one place). It writes only
+# cgroup control files (RAM) and signals nothing; when it stops (SIGTERM) it lifts the ceiling, so the UI is never left throttled.
+#
+# NOT ENABLED (no link in wispos.target.wants), on purpose: the first real-game A/B (docs/WISPOS-NOTES.md, 2026-10-11) showed that a ceiling ALONE makes the still-running UI thrash
+# (Steam UI 84% of a core instead of 21%, swap churn 3110/2097 pages/s instead of 428/163, Quake III 25.0 fps against 28.3). The ceiling is only useful together with something that
+# stops the hidden UI from touching its pages (a freeze while the game owns the screen), and that needs a visibility rule (the Steam button must bring the UI back): not built.
+# Start it by hand with `systemctl start wisp-ui-reclaim` to experiment.
+[Unit]
+Description=WispOS Steam UI memory ceiling
+Before=wisp-steam.service
+After=sysinit.target
+
+[Service]
+# the sway socket: with --freeze the program follows which window is in front (not used by the unit's default arguments, which do not freeze)
+Environment=XDG_RUNTIME_DIR=/var/run/0-runtime-dir SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
+ExecStart=/usr/bin/wisp-ui-reclaim
+Restart=on-failure
+RestartSec=5
+Nice=5
+

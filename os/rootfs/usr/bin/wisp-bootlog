@@ -1,0 +1,32 @@
+#!/bin/sh
+# Writes a plain-text snapshot of how this boot went, so a card that boots but cannot be reached
+# over the network can still be diagnosed: put it in any PC and open wispos/last-boot.txt on the
+# FAT boot partition. Also kept at /storage/wispos/logs/last-boot.txt. Started by wisp-bootlog.timer
+# shortly after boot; best effort, never fails the boot.
+out=/tmp/wisp-last-boot.txt
+{
+    echo "WispOS boot report  $(date -u '+%Y-%m-%d %H:%M:%S UTC')  uptime $(cut -d' ' -f1 /proc/uptime)s"
+    echo "kernel $(uname -r)  $(uname -m)  cmdline: $(cat /proc/cmdline)"
+    echo; echo "== system state: $(systemctl is-system-running 2>&1)"
+    systemctl --failed --no-legend --plain 2>&1
+    echo; echo "== jobs still running"; systemctl list-jobs --no-legend 2>&1 | head -20
+    echo; echo "== network"; ip -o addr 2>&1 | cut -c1-120; echo; nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device 2>&1 | head -10
+    echo; rfkill list 2>&1 | head -12
+    echo; echo "== display"; for c in /sys/class/drm/card*-*; do echo "$c $(cat "$c/status" 2>/dev/null)"; done 2>/dev/null
+    ls /sys/class/backlight 2>&1 | head -3
+    echo; echo "== power"; for p in /sys/class/power_supply/*; do echo "$p $(cat "$p/status" 2>/dev/null) $(cat "$p/capacity" 2>/dev/null)%"; done 2>/dev/null
+    echo; echo "== memory"; head -3 /proc/meminfo; cat /proc/swaps
+    echo; echo "== session"; systemctl status wisp-steam --no-pager 2>&1 | head -8
+    echo; echo "== display server (sway) and first-run setup, this boot"; journalctl -b -u sway -u wisp-setup --no-pager -n 80 2>&1 | cut -c1-220
+    echo; echo "== setup and installer state"; systemctl status wisp-setup --no-pager 2>&1 | head -8; ls -la /storage/wispos/runtime 2>&1 | head -8; df -h /storage 2>&1 | tail -1
+    echo; echo "== warnings and errors from the journal (this boot, last 120)"; journalctl -b -p warning --no-pager -n 120 2>&1 | cut -c1-220
+    echo; echo "== kernel log (last 150 lines)"; dmesg 2>&1 | tail -150 | cut -c1-220
+} >"$out" 2>&1
+mkdir -p /storage/wispos/logs && cp "$out" /storage/wispos/logs/last-boot.txt
+# The FAT partition is mounted read-only; open it for the few milliseconds this copy takes.
+if [ -d /flash/wispos ] && mount -o remount,rw /flash 2>/dev/null; then
+    head -c 60000 "$out" >/flash/wispos/last-boot.txt; sync
+    mount -o remount,ro /flash 2>/dev/null
+fi
+rm -f "$out"
+exit 0

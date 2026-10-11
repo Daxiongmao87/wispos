@@ -1,0 +1,8 @@
+#!/bin/sh
+# WispOS replacement for ROCKNIX's 080-network.
+#
+# ROCKNIX's version disables Wi-Fi whenever its wifi setting is 0, and ROCKNIX's default system.cfg says 0, so about
+# 18 s into every boot it switched the radio off after NetworkManager had already joined the network; systemd-rfkill then saved that
+# soft block and restored it on the next boot. WispOS has no airplane mode: the Wi-Fi radio is always on, and this only lifts a block
+# that an earlier boot (or an older image) left behind. Joining a network is NetworkManager's job (profiles under /storage/.config).
+rfkill unblock wifi

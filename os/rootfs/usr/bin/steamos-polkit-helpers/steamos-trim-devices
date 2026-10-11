@@ -1,0 +1,13 @@
+#!/bin/sh
+# Placeholder for the SteamOS helper that Steam's "Format SD Card" calls (/usr/bin/steamos-polkit-helpers/steamos-trim-devices).
+# It formats NOTHING yet: it records exactly how Steam calls it (arguments, caller, relevant environment) in /storage/wispos/logs/steamos-trim-devices.log and exits 1, so
+# Steam reports a failure instead of pretending. The real formatter is written once the log shows what Steam passes (docs/WISPOS-NOTES.md, "SD card formatter").
+log_dir=${WISP_LOG_DIR:-/storage/wispos/logs}; mkdir -p "$log_dir" 2>/dev/null
+{
+    echo "=== $(date '+%Y-%m-%d %H:%M:%S') $0 called"
+    echo "argv ($#): $*"
+    echo "uid=$(id -u) pid=$$ ppid=$PPID parent: $(tr '\0' ' ' < /proc/$PPID/cmdline 2>/dev/null | cut -c1-200)"
+    env | grep -E '^(STEAM|SUDO|PKEXEC|DBUS|DEVICE|LABEL|SD)' | sort
+} >> "$log_dir/steamos-trim-devices.log" 2>/dev/null
+echo "WispOS: the SD card formatter is not implemented yet; nothing was changed." >&2
+exit 1

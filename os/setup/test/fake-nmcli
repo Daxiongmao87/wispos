@@ -1,0 +1,35 @@
+#!/bin/sh
+# A stand-in for nmcli for testing wisp-setup. State lives in $FAKE_DIR; every call is logged to $FAKE_DIR/calls.log.
+D=${FAKE_DIR:-/tmp/wisp-fake}; mkdir -p "$D"; echo "nmcli $*" >>"$D/calls.log"
+case "$*" in
+  *"-f TYPE device"*) [ -n "$FAKE_NO_WIFI" ] && printf 'ethernet\nloopback\n' || printf 'wifi\nethernet\nloopback\n'; exit 0 ;;
+  "radio wifi on") exit 0 ;;
+  *"device wifi list"*)
+      act=""; [ -f "$D/connected" ] && act=$(cat "$D/connected")
+      while IFS= read -r line; do case "$line" in *":$act:"*) [ -n "$act" ] && line="*${line#?}" ;; esac; printf '%s\n' "$line"; done <<'SCAN'
+ :Home-WiFi-5G:92:WPA2
+ :TP-Link_A3F2:74:WPA2 WPA3
+ :Guest network:61:--
+ :Captive portal:55:--
+ :Cafe\: Wi-Fi:41:WPA2
+ ::30:WPA2
+ :Home-WiFi-5G:40:WPA2
+SCAN
+      exit 0 ;;
+  *"device wifi connect"*)
+      # nmcli --wait 45 device wifi connect SSID [password PW] [hidden yes]
+      ssid=""; pw=""; prev=""
+      for a in "$@"; do
+        [ "$prev" = connect ] && ssid="$a"
+        [ "$prev" = password ] && pw="$a"
+        prev="$a"
+      done
+      case "$ssid" in
+        "Home-WiFi-5G") [ "$pw" = "correct-horse-battery" ] && { echo "$ssid" >"$D/connected"; echo "Device 'wlan0' successfully activated"; exit 0; } ;;
+        "Guest network"|"Captive portal") echo "$ssid" >"$D/connected"; echo "Device 'wlan0' successfully activated"; exit 0 ;;
+        "Secret Net") [ "$pw" = "hunter2hunter2" ] && { echo "$ssid" >"$D/connected"; echo ok; exit 0; } ;;
+      esac
+      echo "Error: Connection activation failed: (7) Secrets were required, but not provided."; exit 4 ;;
+  "connection delete id"*) exit 0 ;;
+esac
+echo "fake-nmcli: unhandled: $*" >&2; exit 1

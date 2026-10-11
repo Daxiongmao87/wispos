@@ -1,0 +1,26 @@
+#!/bin/sh
+# DEV BUILDS ONLY. A flight recorder for lock-ups: every 10 s it prints one line of system state to stdout, which systemd puts in the journal (RAM, about 2 MB, gone at power-off).
+# Nothing is written to the card (operator, 2026-10-11: write to disk sparingly, in dev too). The developer machine keeps the record: `os/dev/log-stream.sh` streams the journal over ssh,
+# so a freeze that ends in a power-cycle still leaves its evidence on the host, up to the moment the device went quiet. START THE STREAM BEFORE a test that might wedge the device;
+# without it a power-cycle erases the journal. Kernel messages (GPU/DRM faults, OOM, hung tasks) are in the journal already and are not repeated here.
+export XDG_RUNTIME_DIR=/var/run/0-runtime-dir SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
+# sway's IPC leaks about 8x the size of every reply (docs/WISPOS-NOTES.md, "MEMORY FLOOR"), so the compositor is asked only every 30th round (5 min); the other lines repeat the last answer.
+n=0; sway=unasked
+echo "--- blackbox started, uptime $(cut -d' ' -f1 /proc/uptime) s, boot $(cut -c1-8 /proc/sys/kernel/random/boot_id)"
+# One awk per round over a handful of /proc and /sys files: the recorder must not be the thing that costs CPU (an earlier version ran top and scanned every process each round).
+while :; do
+    [ $((n % 30)) -eq 0 ] && { sway=$(timeout 3 swaymsg -t get_version >/dev/null 2>&1 && echo ok || echo NOANSWER); }
+    n=$((n + 1))
+    awk -v sway="$sway" '
+        FILENAME == "/proc/uptime"                    { up = $1 }
+        FILENAME == "/proc/meminfo" && /^MemAvailable/ { avail = int($2 / 1024) }
+        FILENAME == "/sys/block/zram0/mm_stat"        { zu = int($3 / 1048576); zo = int($1 / 1048576) }
+        FILENAME == "/proc/swaps" && /zram/           { swap = int($4 / 1024) }
+        FILENAME == "/proc/pressure/memory"           { split($2, a, "="); psi = psi substr($1, 1, 1) a[2] " " }
+        FILENAME == "/proc/loadavg"                   { load = $1 }
+        FILENAME ~ /cur_freq$/                        { gpu = int($1 / 1000000) }
+        FILENAME ~ /temp$/                            { temp = int($1 / 1000) }
+        END { printf "up=%s avail=%dM zram=%d/%dM swap=%dM psi=%s load=%s gpu=%dMHz t=%dC sway=%s\n", up, avail, zu, zo, swap, psi, load, gpu, temp, sway }
+    ' /proc/uptime /proc/meminfo /sys/block/zram0/mm_stat /proc/swaps /proc/pressure/memory /proc/loadavg /sys/class/devfreq/1800000.gpu/cur_freq /sys/class/thermal/thermal_zone0/temp 2>/dev/null
+    sleep 10
+done

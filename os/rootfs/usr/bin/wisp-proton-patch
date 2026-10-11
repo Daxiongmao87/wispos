@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+"""WispOS: patch the installed ARM64 Proton's `proton` launcher so Steam's install-script evaluation is not repeated on every launch.
+
+Why: Steam runs `proton run iscriptevaluator.exe legacycompat\\evaluatorscript_<appid>.vdf` before EVERY game launch. On this device (an x86 Windows program under FEX on a
+Cortex-A53) that one pass takes about 100 s, three quarters of a game's launch time, although its work (for Worms Armageddon: `WA.exe /quiet /register`, guarded by a
+registry key that is already set) is done after the first run (measured 2026-10-09, docs/WISPOS-NOTES.md). Steam's own rule is that a script that returned 0 is not run
+again; this patch applies that rule here.
+What it does: when `proton run` is started for iscriptevaluator.exe with an evaluatorscript file, hash that file together with the Proton version; if a marker for that hash
+exists in the game's compat data directory, exit 0 at once (before Proton's own start-up); otherwise run as before and, when it exits 0, write the marker. A changed script (new
+game build, new redistributable) or a new Proton version has a new hash and runs again; deleting the compat data deletes the markers.
+Second piece, same launcher, same run: every game process gets `PAN_MESA_DEBUG=linear` (added to any flags already set, never duplicated). Why: Mesa 26.2.2's panfrost driver
+(Mali-G31) writes past the end of a GPU buffer when it uploads a tiled texture from a pixel buffer; the game's thread continues after Wine returns the access violation with
+Mesa's mutex still locked and deadlocks on its next GL call (measured 2026-10-10: seven starts of the same match out of seven hung without it, with `linear` two out of two ran, one at a mean of 45.7 fps;
+`noafbc` alone did not help). Linear textures avoid the tiled upload path. A WORKAROUND for a Mesa bug, not a feature: delete the piece when the image's Mesa is fixed
+(docs/WISPOS-NOTES.md, "OPEN, CORE-LEVEL"; report draft in docs/upstream/). Valve's own launcher sets Mesa environment defaults the same way (MESA_EXTENSION_OVERRIDE for ARM64).
+Idempotent (a marker comment guards each piece), syntax-checked before writing, keeps `proton.wisp-orig`. Run before every Steam start by wisp-steam-session (Proton may be updated or
+installed while Steam runs). usage: wisp-proton-patch [PATH_TO_proton ...]   (default: every compatibilitytools.d/Proton*/proton and steamapps/common/Proton*(ARM64)/proton)   exit 0 = fine, 1 = a file not understood
+"""
+import glob, os, sys
+
+MARK = '# WispOS iscript skip'
+STEAM_ROOT = '/storage/wispos/runtime/steam'
+
+HEAD = '''    ''' + MARK + ''' (wisp-proton-patch): Steam repeats this evaluation before every launch; skip it when this exact script already ran to exit 0 under this prefix.
+    wisp_marker = None
+    if len(sys.argv) > 3 and sys.argv[1] == "run" and sys.argv[2].replace("\\\\", "/").lower().endswith("/iscriptevaluator.exe"):
+        import hashlib
+        try:
+            script = [a for a in sys.argv[3:] if "evaluatorscript" in a][0].replace("\\\\", "/")
+            script = os.path.join(os.environ.get("STEAM_COMPAT_CLIENT_INSTALL_PATH", ""), script)
+            digest = hashlib.sha256(open(script, "rb").read() + b"\\0" + open(os.path.join(os.path.dirname(sys.argv[0]), "version"), "rb").read()).hexdigest()
+            wisp_marker = os.path.join(os.environ["STEAM_COMPAT_DATA_PATH"], "wisp-iscript-done", digest)
+        except (IndexError, OSError, KeyError):
+            wisp_marker = None
+        if wisp_marker and os.path.exists(wisp_marker):
+            sys.stderr.write("WispOS: install script already ran to exit 0 for this script (" + os.path.basename(wisp_marker)[:12] + "); skipped\\n")
+            sys.exit(0)
+
+'''
+
+TAIL = '''        if wisp_marker and rc == 0:  ''' + MARK + '''
+            os.makedirs(os.path.dirname(wisp_marker), exist_ok=True)
+            open(wisp_marker, "w").close()
+'''
+
+ENV_MARK = '# WispOS panfrost workaround'
+ENV = '    ' + ENV_MARK + ''' (wisp-proton-patch): Mesa's panfrost overruns a GPU buffer in a tiled texture upload and the game then deadlocks; linear textures avoid it (docs/WISPOS-NOTES.md).
+    if "linear" not in os.environ.get("PAN_MESA_DEBUG", "").split(","):
+        os.environ["PAN_MESA_DEBUG"] = ",".join(f for f in (os.environ.get("PAN_MESA_DEBUG", ""), "linear") if f)
+
+'''
+
+ANCHOR_HEAD = '    g_proton = Proton(os.path.dirname(sys.argv[0]))\n'
+ANCHOR_TAIL = '        rc = g_session.run()\n    elif sys.argv[1] == "waitforexitandrun":\n'
+
+
+def patched(text):
+    """(new text, status): 'patched' (a piece was added), 'present' (all pieces already there) or 'unrecognised' (text unchanged). Each piece is added only if its marker is
+    missing and checks only the anchors it needs (an already patched launcher no longer contains the original tail anchor), so a launcher patched by an older version of
+    this tool gets the newer pieces at the next start."""
+    if MARK in text and ENV_MARK in text: return text, 'present'
+    if text.count(ANCHOR_HEAD) != 1: return text, 'unrecognised'
+    if MARK not in text:
+        if text.count(ANCHOR_TAIL) != 1 or text.index(ANCHOR_HEAD) > text.index(ANCHOR_TAIL): return text, 'unrecognised'
+        text = text.replace(ANCHOR_HEAD, HEAD + ANCHOR_HEAD, 1)
+        head, tail = ANCHOR_TAIL.split('\n', 1)[0] + '\n', ANCHOR_TAIL.split('\n', 1)[1]
+        text = text.replace(ANCHOR_TAIL, head + TAIL + tail, 1)
+    if ENV_MARK not in text:
+        text = text.replace(ANCHOR_HEAD, ENV + ANCHOR_HEAD, 1)
+    try: compile(text, 'proton', 'exec')
+    except SyntaxError: return text, 'unrecognised'
+    return text, 'patched'
+
+
+def default_files(steam_root=STEAM_ROOT):
+    """The launchers to patch: our custom tool(s) under compatibilitytools.d (Steam never validates or updates those), and Valve's own ARM64 Proton if present
+    (Steam may replace that one again; the patch is re-applied at the next start)."""
+    return sorted(glob.glob(os.path.join(steam_root, 'compatibilitytools.d', 'Proton*', 'proton')) +
+                  glob.glob(os.path.join(steam_root, 'steamapps', 'common', 'Proton*(ARM64)', 'proton')))
+
+
+def main(argv):
+    files = argv or default_files()
+    bad = 0
+    for path in files:
+        old = open(path, encoding='utf-8').read()
+        new, status = patched(old)
+        if status == 'unrecognised':
+            print('wisp-proton-patch: %s has an unexpected structure; left alone' % path); bad = 1; continue
+        if status == 'patched':
+            if not os.path.exists(path + '.wisp-orig'): open(path + '.wisp-orig', 'w', encoding='utf-8').write(old)
+            mode = os.stat(path).st_mode & 0o7777
+            tmp = path + '.wisp-new'
+            open(tmp, 'w', encoding='utf-8').write(new); os.chmod(tmp, mode); os.replace(tmp, path)
+        print('wisp-proton-patch: %s: %s' % (path, status))
+    return bad
+
+
+if __name__ == '__main__': sys.exit(main(sys.argv[1:]))

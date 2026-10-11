@@ -1,0 +1,19 @@
+# WispOS: SSH is always on (no kernel-command-line or marker-file condition, unlike ROCKNIX's unit).
+[Unit]
+Description=OpenSSH server daemon
+After=network.target
+
+[Service]
+Restart=on-failure
+ExecStartPre=-/bin/sh -c 'mkdir -p /storage/.cache/ssh'
+ExecStartPre=/usr/bin/ssh-keygen -A
+ExecStartPre=-/bin/sh -c 'chmod 600 /storage/.cache/ssh/ssh_host_*'
+ExecStartPre=-/bin/sh -c 'chmod 644 /storage/.cache/ssh/ssh_host_*.pub'
+ExecStart=/usr/sbin/sshd -D
+ExecReload=/bin/kill -HUP $MAINPID
+TimeoutStopSec=1s
+RestartSec=2
+StartLimitInterval=0
+
+[Install]
+WantedBy=multi-user.target

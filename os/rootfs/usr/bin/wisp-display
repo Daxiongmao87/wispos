@@ -1,0 +1,12 @@
+#!/bin/sh
+# wisp-display native|default: set the panel's sway output scale.
+#   native   1: the full 720x480, for WispOS's own screens (they draw at the size sway gives them, so half resolution makes their text soft)
+#   default  the scale in the image's base config (usr/share/sway/config.kiosk), so that file stays the single place the default display is defined
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}; SWAYSOCK=${SWAYSOCK:-$XDG_RUNTIME_DIR/sway-ipc.0.sock}; export SWAYSOCK
+case "${1:-}" in
+    native) scale=1 ;;
+    default) scale=$(sed -n 's/^output DSI-1 scale \([0-9.][0-9.]*\)[[:space:]]*$/\1/p' "${WISP_KIOSK_CONFIG:-/usr/share/sway/config.kiosk}" | tail -n 1); scale=${scale:-1} ;;
+    *) echo "usage: wisp-display native|default" >&2; exit 2 ;;
+esac
+n=0; while [ ! -S "$SWAYSOCK" ] && [ "$n" -lt 50 ]; do sleep 0.2; n=$((n + 1)); done        # sway's IPC socket appears a moment after its Wayland socket
+exec swaymsg output DSI-1 scale "$scale" >/dev/null

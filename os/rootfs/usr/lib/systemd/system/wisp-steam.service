@@ -1,0 +1,27 @@
+# WispOS session: Steam Big Picture is the only thing the device runs (part of the image;
+# there is no other frontend). Started by wispos.target after the compositor and seat daemon.
+[Unit]
+Description=WispOS Steam Big Picture session
+Requires=sway.service
+After=sway.service seatd.service NetworkManager.service iwd.service rocknix-autostart.service wisp-setup.service
+# Wants, not Requires: if the screen cannot run at all (no display) the session still gets its own chance and its own skip rules.
+Wants=wisp-setup.service
+RequiresMountsFor=/storage
+# Without the Steam runtime on /storage there is nothing to start; the unit is skipped, not failed.
+ConditionPathExists=/storage/wispos/runtime/READY
+
+[Service]
+Type=simple
+Environment=HOME=/storage/wispos/home
+ExecStartPre=-/usr/bin/wisp-shm-clean
+ExecStart=/usr/bin/wisp-steam-session
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=3
+KillMode=control-group
+TimeoutStopSec=20
+StandardOutput=append:/storage/wispos/logs/session.log
+StandardError=inherit
+
+[Install]
+WantedBy=wispos.target

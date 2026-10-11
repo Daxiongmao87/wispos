@@ -1,0 +1,7 @@
+# Mounts the ext4 card in the TF2 slot at /storage/wispos/tf2 (Steam library folder); started by udev (98-wisp-tf2.rules) when the card appears. Idempotent.
+[Unit]
+Description=WispOS mount of the card in the TF2 slot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/wispos/tf2-card mount

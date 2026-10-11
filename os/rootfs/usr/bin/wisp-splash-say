@@ -1,0 +1,16 @@
+#!/bin/sh
+# WispOS: tell the boot splash (/usr/bin/wisp-splash in the initramfs, docs/WISPOS-SPLASH-DESIGN.md) what the boot is doing.
+#   wisp-splash-say "Starting the display"     the stage line
+#   wisp-splash-say --ready                    the next screen is up: the splash exits
+#   wisp-splash-say --fail "Display failed"    the red failure screen; the log opens by itself
+# The splash's FIFO is /dev/wisp-splash.fifo. It is opened read-write (1<>), which never blocks, so a unit calling this is never held up and never fails: with no splash
+# (a development image with wisp.splash=off, or after `ready`) the line is simply dropped.
+fifo=${WISP_SPLASH_FIFO:-/dev/wisp-splash.fifo}      # the override is for tests
+[ -p "$fifo" ] || exit 0
+case "${1:-}" in
+    --ready) cmd=ready ;;
+    --fail)  shift; cmd="fail $*" ;;
+    *)       cmd="status $*" ;;
+esac
+printf '%s\n' "$cmd" 1<>"$fifo"
+exit 0

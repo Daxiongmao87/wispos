@@ -1,0 +1,12 @@
+#!/bin/sh
+# A stand-in for steam-install. Behaviour from $FAKE_DIR/installer: ok (default), failonce, fail, noready (says done, writes no READY), missing (exit 127).
+D=${FAKE_DIR:-/tmp/wisp-fake}; mkdir -p "$D"; echo "installer run" >>"$D/calls.log"
+mode=$(cat "$D/installer" 2>/dev/null || echo ok)
+[ "$mode" = missing ] && exit 127
+echo "phase download"; echo "progress 0 1000000000 bins"; echo "progress 400000000 1000000000 webkit"
+if [ "$mode" = fail ] || { [ "$mode" = failonce ] && [ ! -f "$D/installer.failed" ]; }; then
+    touch "$D/installer.failed"; echo "error Lost the connection to Steam's servers."; exit 1
+fi
+echo "progress 1000000000 1000000000 webkit"; echo "phase extract"; echo "phase finish"
+[ "$mode" = noready ] || echo "Ready" >"${WISP_READY:-$D/READY}"
+echo done

@@ -1,0 +1,12 @@
+# The card in the TF2 slot (second SD controller, mmc@4022000) belongs to Steam, not to ROCKNIX's games-card automount (99-automount.rules, pruned from the image):
+# mount it when its first partition appears (ext4 only) and unmount it when the partition goes. The work is done by services, because a mount made from udev's own RUN
+# stays in udev's mount namespace. The controller name must be the one TF2_HOST names in /usr/lib/wispos/tf2-card (os/test_rootfs.py checks that they agree).
+SUBSYSTEM!="block", GOTO="wisp_tf2_end"
+ENV{DEVTYPE}!="partition", GOTO="wisp_tf2_end"
+KERNEL!="mmcblk[0-9]p1", GOTO="wisp_tf2_end"
+DEVPATH!="*/4022000.mmc/*", GOTO="wisp_tf2_end"
+ACTION=="remove", RUN+="/usr/bin/systemctl --no-block restart wisp-tf2-umount.service", GOTO="wisp_tf2_end"
+ACTION!="add", GOTO="wisp_tf2_end"
+IMPORT{builtin}="blkid"
+ENV{ID_FS_TYPE}=="ext4", RUN+="/usr/bin/systemctl --no-block restart wisp-tf2-mount.service"
+LABEL="wisp_tf2_end"

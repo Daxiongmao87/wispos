@@ -1,0 +1,7 @@
+# Unmounts the TF2 card's mount point; started by udev (98-wisp-tf2.rules) when the card's partition goes away. Lazy when the device is already gone.
+[Unit]
+Description=WispOS unmount of the card in the TF2 slot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/wispos/tf2-card umount

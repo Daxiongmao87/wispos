@@ -1,0 +1,81 @@
+#!/usr/bin/python3
+# Blank the panel when nobody has touched it for a while, and wake it on any button press. Panel wear (the backlight) and battery are why.
+#   timeout: seconds in /storage/wispos/config/screen-timeout (read every second, so it can be changed live; 0 = never blank), default 120.
+#   activity: a key press on the pad, the volume keys or the power key; `wisp-screen wake` also counts. Held off while /run/wisp-screen-inhibit exists.
+# Every activity also touches /run/wisp-last-input, which wisp-compat-gate reads. The idle decision is a pure function (decide) so it can be tested without a screen. Stdlib only.
+import glob, os, select, struct, subprocess, sys, time
+
+TIMEOUT_FILE = os.environ.get('WISP_SCREEN_TIMEOUT_FILE', '/storage/wispos/config/screen-timeout'); DEFAULT_TIMEOUT = 120
+RUN = os.environ.get('WISP_SCREEN_RUN', '/run'); BL = os.environ.get('WISP_BACKLIGHT', '/sys/class/backlight/backlight/bl_power')
+IGNORE = ('lid', 'jack')                       # not activity: the lid switch and the headphone jack
+
+
+def decide(screen_on, now, last_activity, timeout, inhibited):
+    """'off' when the screen is on and has been idle for `timeout` seconds (and nothing inhibits it), else None. Waking is handled by the activity itself."""
+    if screen_on and timeout > 0 and not inhibited and now - last_activity >= timeout:
+        return 'off'
+    return None
+
+
+def read_timeout():
+    try: return max(0, int(open(TIMEOUT_FILE).read().split()[0]))
+    except (OSError, ValueError, IndexError): return DEFAULT_TIMEOUT
+
+
+def screen_is_on():
+    try: return open(BL).read().strip() == '0'
+    except OSError: return True
+
+
+def input_devices():
+    out = []
+    for path in sorted(glob.glob('/dev/input/event*')):
+        try:
+            name = open('/sys/class/input/%s/device/name' % os.path.basename(path)).read().strip().lower()
+            if not any(w in name for w in IGNORE): out.append(os.open(path, os.O_RDONLY | os.O_NONBLOCK))
+        except OSError: pass
+    return out
+
+
+def sway(*args):
+    env = dict(os.environ, XDG_RUNTIME_DIR=os.environ.get('XDG_RUNTIME_DIR', '/var/run/0-runtime-dir'))
+    env.setdefault('SWAYSOCK', env['XDG_RUNTIME_DIR'] + '/sway-ipc.0.sock')
+    subprocess.run(['swaymsg', *args], env=env, capture_output=True)
+
+
+def touch(path):
+    """Mark activity for other services (wisp-compat-gate reads /run/wisp-last-input: one definition of 'someone is using the device')."""
+    try:
+        with open(path, 'a'): os.utime(path, None)
+    except OSError: pass
+
+
+def mtime(path):
+    try: return os.stat(path).st_mtime
+    except OSError: return 0
+
+
+def main():
+    fds = input_devices(); last = time.time(); seen_wake = mtime(RUN + '/wisp-screen-wake')
+    while True:
+        r, _, _ = select.select(fds, [], [], 1.0) if fds else ([], [], time.sleep(1.0))
+        pressed = False
+        for fd in r:
+            try:
+                data = os.read(fd, 24 * 32)
+                for i in range(0, len(data) - 23, 24):
+                    _s, _u, typ, code, value = struct.unpack('qqHHi', data[i:i + 24])
+                    if typ == 1 and value == 1: pressed = True          # EV_KEY press (analog stick noise is ignored on purpose)
+            except (BlockingIOError, OSError): pass
+        wake = mtime(RUN + '/wisp-screen-wake')
+        if wake != seen_wake: seen_wake = wake; pressed = True
+        now = time.time(); on = screen_is_on()
+        if pressed:
+            last = now; touch(RUN + '/wisp-last-input')
+            if not on: sway('output', 'DSI-1', 'power', 'on')
+            continue
+        if decide(on, now, last, read_timeout(), os.path.exists(RUN + '/wisp-screen-inhibit')) == 'off':
+            sway('output', 'DSI-1', 'power', 'off')
+
+
+if __name__ == '__main__': main()

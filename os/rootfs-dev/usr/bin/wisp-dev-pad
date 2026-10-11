@@ -1,0 +1,254 @@
+#!/usr/bin/python3
+"""wisp-dev-pad: a virtual gamepad for DEVELOPMENT builds, so a developer (or an agent that can take screenshots) can drive the
+on-screen UI over SSH. Not part of release images.
+
+    wisp-dev-pad start [--clone NAME] [--name NAME]   create the device and keep it (background); prints its event node
+    wisp-dev-pad press NAME [NAME ...] [--hold MS] [--gap MS]    NAME: up down left right a b x y l r select start mode
+    wisp-dev-pad stop | status
+
+Without --clone it is a generic 9-button pad with a hat (SDL treats it as a plain joystick: button 0=A, 1=B, 2=X, 3=Y, 6=Select,
+7=Start). With --clone SUBSTRING it copies the identity (bus, vendor, product, version, name) and the button/hat set of the real
+pad whose name contains SUBSTRING, and takes the meaning of the logical names from the SDL controller database entry for that pad
+(/usr/config/SDL-GameControllerDB/gamecontrollerdb.txt), so SDL and Steam apply the same mapping they apply to the real pad.
+
+The daemon reads commands from a FIFO and presses with a real hold time; presses are never repeated unless asked. It never types
+text: entering account names, passwords or confirming purchases stays with the person.
+"""
+import fcntl
+import glob
+import os
+import re
+import select
+import signal
+import struct
+import sys
+import time
+
+RUN = os.environ.get('WISP_PAD_DIR', '/run')
+FIFO, PIDFILE, READY = f'{RUN}/wisp-dev-pad.fifo', f'{RUN}/wisp-dev-pad.pid', f'{RUN}/wisp-dev-pad.ready'
+DB = os.environ.get('WISP_PAD_DB', '/usr/config/SDL-GameControllerDB/gamecontrollerdb.txt')
+
+UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_ABSBIT = 0x40045564, 0x40045565, 0x40045567
+UI_DEV_SETUP, UI_ABS_SETUP, UI_DEV_CREATE, UI_DEV_DESTROY = 0x405c5503, 0x401c5504, 0x5501, 0x5502
+EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
+ABS_HAT0X, ABS_HAT0Y = 0x10, 0x11
+BTN_JOYSTICK = 0x120
+# generic pad: Linux's standard gamepad codes (A=SOUTH, B=EAST, X=NORTH, Y=WEST)
+GENERIC_KEYS = {'a': 0x130, 'b': 0x131, 'x': 0x133, 'y': 0x134, 'l': 0x136, 'r': 0x137, 'select': 0x13a, 'start': 0x13b, 'mode': 0x13c}
+HATS = {'left': (ABS_HAT0X, -1), 'right': (ABS_HAT0X, 1), 'up': (ABS_HAT0Y, -1), 'down': (ABS_HAT0Y, 1)}
+# SDL's names for the same things, as they appear in the controller database
+SDL_NAMES = {'a': 'a', 'b': 'b', 'x': 'x', 'y': 'y', 'l': 'leftshoulder', 'r': 'rightshoulder', 'select': 'back', 'start': 'start',
+             'mode': 'guide', 'up': 'dpup', 'down': 'dpdown', 'left': 'dpleft', 'right': 'dpright'}
+HAT_BITS = {'up': 1, 'right': 2, 'down': 4, 'left': 8}      # SDL hat masks: h0.1 up, h0.2 right, h0.4 down, h0.8 left
+
+
+def bits_from_sysfs(text):
+    """The bit indices set in a /sys/class/input/eventN/device/capabilities/* value (space separated 64-bit hex words, most significant first)."""
+    out = set()
+    for pos, word in enumerate(reversed(text.split())):
+        value = int(word, 16)
+        out |= {pos * 64 + i for i in range(64) if value >> i & 1}
+    return out
+
+
+def sdl_button_order(key_codes):
+    """SDL's Linux joystick numbering: key codes from BTN_JOYSTICK up first, then the ones below it, each ascending. Index = button number."""
+    codes = sorted(key_codes)
+    return [c for c in codes if c >= BTN_JOYSTICK] + [c for c in codes if c < BTN_JOYSTICK]
+
+
+def parse_db_line(line):
+    """('name', {'a': 'b0', 'dpup': 'h0.1', ...}) from one gamecontrollerdb line, or None."""
+    parts = line.strip().split(',')
+    if len(parts) < 3 or line.startswith('#'):
+        return None
+    return parts[1], dict(p.split(':', 1) for p in parts[2:] if ':' in p)
+
+
+def logical_map(name, key_codes, db_lines):
+    """{'a': ('key', code) | ('hat', axis, value)} for the named pad, from its database entry; None if it has none."""
+    order = sdl_button_order(key_codes)
+    for line in db_lines:
+        parsed = parse_db_line(line)
+        if not parsed or parsed[0].lower() != name.lower():
+            continue
+        mapping = {}
+        for ours, sdl in SDL_NAMES.items():
+            spec = parsed[1].get(sdl, '')
+            if re.fullmatch(r'b\d+', spec) and int(spec[1:]) < len(order):
+                mapping[ours] = ('key', order[int(spec[1:])])
+            elif re.fullmatch(r'h0\.\d+', spec) and ours in HAT_BITS and int(spec[3:]) == HAT_BITS[ours]:
+                mapping[ours] = ('hat',) + HATS[ours]
+        return mapping
+    return None
+
+
+def find_real_pad(substring):
+    """(name, (bus, vendor, product, version), event node) of the first joystick-handled input device whose name contains substring."""
+    with open('/proc/bus/input/devices') as f:
+        blocks = f.read().strip().split('\n\n')
+    for block in blocks:
+        name = re.search(r'N: Name="(.*)"', block)
+        ident = re.search(r'Bus=(\w+) Vendor=(\w+) Product=(\w+) Version=(\w+)', block)
+        handlers = re.search(r'H: Handlers=(.*)', block)
+        if name and ident and handlers and substring.lower() in name.group(1).lower() and 'js' in handlers.group(1):
+            event = re.search(r'event\d+', handlers.group(1))
+            if event:
+                return name.group(1), tuple(int(v, 16) for v in ident.groups()), event.group(0)
+    return None
+
+
+class Pad:
+    def __init__(self, clone=None, name='WispOS dev virtual pad'):
+        self.abs_info = {ABS_HAT0X: (0, -1, 1, 0, 0, 0), ABS_HAT0Y: (0, -1, 1, 0, 0, 0)}
+        self.ident = (0x06, 0x57, 0x01, 1)                                             # BUS_VIRTUAL, no real vendor's id
+        self.mapping = {k: ('key', c) for k, c in GENERIC_KEYS.items()}
+        self.mapping.update({k: ('hat',) + v for k, v in HATS.items()})
+        key_codes = set(GENERIC_KEYS.values())
+        if clone:
+            real = find_real_pad(clone)
+            if not real:
+                raise SystemExit(f'no joystick device with "{clone}" in its name')
+            name, self.ident, node = real
+            base = f'/sys/class/input/{node}/device/capabilities'
+            key_codes = bits_from_sysfs(open(f'{base}/key').read())
+            abs_codes = bits_from_sysfs(open(f'{base}/abs').read())
+            self.abs_info = {}
+            fd = os.open(f'/dev/input/{node}', os.O_RDONLY)       # read-only: nothing is grabbed from the real pad
+            for code in sorted(abs_codes):
+                buf = fcntl.ioctl(fd, 0x80184540 + code, bytes(24))
+                self.abs_info[code] = struct.unpack('<6i', buf)
+            os.close(fd)
+            try:
+                db = open(DB).read().splitlines()
+            except OSError:
+                db = []
+            mapped = logical_map(name, key_codes, db)
+            if mapped is None:
+                raise SystemExit(f'"{name}" has no entry in {DB}; cannot map button names (start without --clone for a generic pad)')
+            self.mapping = mapped
+        self.name, self.key_codes = name, key_codes
+
+    def create(self):
+        fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+        for ev in (EV_KEY, EV_ABS, EV_SYN):
+            fcntl.ioctl(fd, UI_SET_EVBIT, ev)
+        for code in self.key_codes:
+            fcntl.ioctl(fd, UI_SET_KEYBIT, code)
+        for code in self.abs_info:
+            fcntl.ioctl(fd, UI_SET_ABSBIT, code)
+        fcntl.ioctl(fd, UI_DEV_SETUP, struct.pack('<4H80sI', *self.ident, self.name.encode()[:79], 0))
+        for code, info in self.abs_info.items():
+            fcntl.ioctl(fd, UI_ABS_SETUP, struct.pack('<H2x6i', code, *info))
+        fcntl.ioctl(fd, UI_DEV_CREATE)
+        self.fd = fd
+
+    def emit(self, etype, code, value):
+        os.write(self.fd, struct.pack('<qqHHi', 0, 0, etype, code, value))
+        os.write(self.fd, struct.pack('<qqHHi', 0, 0, EV_SYN, 0, 0))
+
+    def press(self, name, hold_ms):
+        action = self.mapping.get(name)
+        if not action:
+            return False
+        if action[0] == 'key':
+            self.emit(EV_KEY, action[1], 1); time.sleep(hold_ms / 1000); self.emit(EV_KEY, action[1], 0)
+        else:
+            self.emit(EV_ABS, action[1], action[2]); time.sleep(hold_ms / 1000); self.emit(EV_ABS, action[1], 0)
+        return True
+
+    def destroy(self):
+        fcntl.ioctl(self.fd, UI_DEV_DESTROY); os.close(self.fd)
+
+
+def daemon(pad):
+    if os.path.exists(FIFO):
+        os.unlink(FIFO)
+    os.mkfifo(FIFO, 0o600)
+    pad.create()
+    time.sleep(1.5)                                   # let udev and SDL notice the new device before the first press
+    open(PIDFILE, 'w').write(str(os.getpid())); open(READY, 'w').write(pad.name)
+    stop = []
+    signal.signal(signal.SIGTERM, lambda *a: stop.append(1))
+    fifo = os.open(FIFO, os.O_RDWR)                   # read+write so a closing client does not end the stream
+    buffer = b''
+    while not stop:
+        if not select.select([fifo], [], [], 1.0)[0]:     # wake up regularly so SIGTERM is noticed
+            continue
+        buffer += os.read(fifo, 256)
+        while b'\n' in buffer:
+            line, buffer = buffer.split(b'\n', 1)
+            words = line.decode(errors='replace').split()
+            if len(words) >= 2 and words[0] == 'press':
+                pad.press(words[1], int(words[2]) if len(words) > 2 and words[2].isdigit() else 120)
+    pad.destroy()
+    for path in (FIFO, PIDFILE, READY):
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def running():
+    try:
+        pid = int(open(PIDFILE).read())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def main(argv):
+    if not argv or argv[0] in ('-h', '--help'):
+        print(__doc__); return 0
+    cmd, rest = argv[0], argv[1:]
+    if cmd == 'start':
+        if running():
+            print('already running'); return 0
+        opts = dict(zip(rest[::2], rest[1::2]))
+        pad = Pad(clone=opts.get('--clone'), name=opts.get('--name', 'WispOS dev virtual pad'))
+        for path in (READY,):
+            if os.path.exists(path):
+                os.unlink(path)
+        if os.fork():
+            for _ in range(100):
+                if os.path.exists(READY):
+                    print(f'virtual pad "{pad.name}" ready'); return 0
+                time.sleep(0.1)
+            print('the virtual pad did not come up', file=sys.stderr); return 1
+        os.setsid()
+        devnull = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            os.dup2(devnull, fd)
+        daemon(pad)
+        return 0
+    if cmd == 'stop':
+        pid = running()
+        if not pid:
+            print('not running'); return 0
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(50):
+            if not running():
+                break
+            time.sleep(0.1)
+        print('stopped'); return 0
+    if cmd == 'status':
+        print(f'running pid {running()}' if running() else 'not running'); return 0
+    if cmd == 'press':
+        names, hold, gap, i = [], 120, 250, 0
+        while i < len(rest):
+            if rest[i] == '--hold': hold = int(rest[i + 1]); i += 2
+            elif rest[i] == '--gap': gap = int(rest[i + 1]); i += 2
+            else: names.append(rest[i].lower()); i += 1
+        if not running():
+            print('not running: wisp-dev-pad start', file=sys.stderr); return 1
+        for n, name in enumerate(names):
+            if name not in SDL_NAMES:
+                print(f'unknown button {name}', file=sys.stderr); return 2
+            with open(FIFO, 'w') as f:
+                f.write(f'press {name} {hold}\n')
+            time.sleep((hold + gap) / 1000 if n < len(names) - 1 else hold / 1000 + 0.05)
+        return 0
+    print(f'unknown command {cmd}', file=sys.stderr); return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

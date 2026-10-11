@@ -1,0 +1,36 @@
+# First-run setup: the Wi-Fi screen, then the Steam download. Runs before the Steam session and does not finish until the
+# device is online and Steam is installed (it exits at once if Steam already is). A crash restarts it; it never gives up,
+# because without a network and a client nothing after it can work. It waits for the compositor's socket first: sway is
+# "active" a moment before it accepts clients.
+[Unit]
+Description=WispOS first-run setup (Wi-Fi, Steam download)
+Requires=sway.service
+After=sway.service NetworkManager.service iwd.service rocknix-autostart.service wisp-firstboot.service
+Before=wisp-steam.service
+RequiresMountsFor=/storage
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=XDG_RUNTIME_DIR=/var/run/0-runtime-dir WAYLAND_DISPLAY=wayland-1 DISPLAY=:0.0
+Environment=SDL_VIDEODRIVER=wayland,x11 SDL_GAMECONTROLLERCONFIG_FILE=/usr/config/SDL-GameControllerDB/gamecontrollerdb.txt
+ExecStartPre=/bin/sh -c 'until [ -S /var/run/0-runtime-dir/wayland-1 ]; do sleep 0.2; done'
+# The compositor accepts clients: the boot splash (it draws on the framebuffer, which the compositor has taken over) has done its part and exits.
+# Interim until the Wayland phase of docs/WISPOS-SPLASH-DESIGN.md keeps it up through the Steam start.
+ExecStartPre=-/usr/bin/wisp-splash-say --ready
+# The setup screens are WispOS's own and draw at the size sway gives them: at half resolution their text is soft and hard to read, so they run at the
+# full 720x480 and the default display (half resolution) is restored when setup is done, before the Steam session starts.
+ExecStartPre=-/usr/bin/wisp-display native
+ExecStartPre=-/usr/bin/wisp-screen inhibit on
+ExecStart=/usr/bin/wisp-setup --badge /usr/share/wispos/wispos-badge.png
+ExecStartPost=-/usr/bin/wisp-screen inhibit off
+ExecStartPost=-/usr/bin/wisp-display default
+# The session unit is ordered after this one but is skipped (and not retried) if it was evaluated while setup was still failing and
+# restarting, so setup starts it when it succeeds. --no-block: the session waits for this unit to finish activating.
+ExecStartPost=-/usr/bin/systemctl --no-block start wisp-steam.service
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=wispos.target

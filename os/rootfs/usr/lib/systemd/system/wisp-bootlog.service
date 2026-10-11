@@ -1,0 +1,8 @@
+[Unit]
+Description=WispOS boot report (written to the boot partition for diagnosis)
+After=rocknix-autostart.service wisp-firstboot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/wisp-bootlog
+TimeoutStartSec=60

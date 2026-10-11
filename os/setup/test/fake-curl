@@ -1,0 +1,7 @@
+#!/bin/sh
+# A stand-in for curl: Steam's manifest when "online", an HTML sign-in page behind a captive portal, an error when offline.
+D=${FAKE_DIR:-/tmp/wisp-fake}; mkdir -p "$D"; echo "curl $*" >>"$D/calls.log"
+out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+[ -f "$D/connected" ] || { echo "curl: (6) Could not resolve host" >&2; exit 6; }
+if [ "$(cat "$D/connected")" = "Captive portal" ]; then printf '<html><body>Sign in to the hotspot</body></html>' >"$out"; else printf '"linuxarm64"\n{\n\t"version"\t"1"\n}\n' >"$out"; fi
+printf 200

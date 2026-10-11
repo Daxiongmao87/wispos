@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "name": "Proton11-ARM64-A57-v80",
+  "url": "https://github.com/Azkali/proton-arm64-a57/releases/download/11.0-1-beta5-v80-standalone1/Proton11-ARM64-A57-v80.tar.zst",
+  "size": 405811564,
+  "sha256": "f0bc2ea29f792b25724786c6be27967ea23b82e3a1779245550b43fda0dda9dc",
+  "extracted_mib": 1920,
+  "format": "tar.zst",
+  "why": "Steam validates and updates Valve's own 'Proton 11.0 (ARM64)' and so undoes any change made to it, but never touches a tool under compatibilitytools.d. This is the community standalone ARMv8.0 build of proton-11.0-1 (-march=armv8-a): the H700's Cortex-A53 has no LSE atomics. docs/WISPOS-NOTES.md, DESIGN FINDING.",
+  "source": "https://github.com/Azkali/proton-arm64-a57"
+}

@@ -1,0 +1,27 @@
+#!/bin/sh
+# steamos-update: the OS-update entry point of Steam's Settings > System > Software Updates in -steamos3 mode (measured on the device 2026-10-11, docs/WISPOS-NOTES.md: the UI runs
+# this script, not the Atomupd1 D-Bus interface). The call forms Steam makes, and the exit codes it expects, are the ones Bazzite documents for its own copy:
+#   steamos-update --supports-duplicate-detection        exit 0, do nothing
+#   steamos-update [--enable-duplicate-detection] check  exit 0 = an update is available, 7 = none (or it could not be checked)
+#   steamos-update [--enable-duplicate-detection]        install: print progress as NN% lines on stdout; exit 0 when the update is staged
+# Steam then shows "system restart required" and its Restart button: the staged update is applied by the next boot (docs/WISPOS-UPDATE-DESIGN.md). The work is wisp-update's; this only
+# translates. A failure exits 1 with the reason on stderr and in the journal (Steam shows "Update Error" and reads the journal for the details).
+HELPER=${WISP_UPDATE_HELPER:-/usr/lib/wispos/wisp-update}
+STAGED=${WISP_UPDATE_STAGED_MARK:-/run/wisp-update-staged}         # in RAM: a reboot (which applies the update) clears it
+check_only=; for a in "$@"; do case $a in --supports-duplicate-detection) exit 0 ;; check) check_only=1 ;; esac; done
+say() { echo "steamos-update: $*" >&2; command -v logger >/dev/null 2>&1 && logger -t steamos-update "$*"; return 0; }
+[ -e "$STAGED" ] && { say "an update is already staged: restart to apply it"; exit 7; }
+offer=$("$HELPER" check 2>/dev/null | sed -n 's/^update \([^ ]*\) .*/\1/p' | head -1)
+[ -n "$offer" ] || exit 7                                           # nothing newer for this system, or the check failed: Steam only needs to know there is nothing to do
+[ -n "$check_only" ] && exit 0
+rc_file=$(mktemp "${TMPDIR:-/run}/steamos-update.XXXXXX") || { say "cannot make a temporary file"; exit 1; }
+last=-1; err=
+{ "$HELPER" apply "$offer"; echo $? > "$rc_file"; } 2>/dev/null | while read -r kind a b; do
+    case $kind in
+        progress) pct=${a%.*}; [ "$pct" != "$last" ] && { echo "$pct%"; last=$pct; } ;;
+        error) echo "$a $b" > "$rc_file.err" ;;
+    esac
+done
+rc=$(cat "$rc_file" 2>/dev/null); why=$(cat "$rc_file.err" 2>/dev/null); rm -f "$rc_file" "$rc_file.err"
+if [ "$rc" = 0 ]; then : > "$STAGED"; exit 0; fi
+say "the update did not install: ${why:-the helper stopped (exit ${rc:-unknown})}"; exit 1

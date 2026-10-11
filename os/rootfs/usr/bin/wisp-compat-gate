@@ -1,0 +1,127 @@
+#!/usr/bin/python3
+# Gate for the on-device compatibility-layer build (docs/WISPOS-COMPAT-LAYER-SPEC.md, section 5.2): may a compile run RIGHT NOW? Stdlib only.
+#   wisp-compat-gate [--phase idle|running|paused]     prints one JSON line {allowed, reason, state}; exit 0 = may run, 1 = must wait/freeze
+# Rules (operator, 2026-10-10): no game (a `reaper ... SteamLaunch` process); no input for 5 minutes (the marker /run/wisp-last-input, touched by wisp-screen-idle, so
+# there is ONE definition of activity); no Steam download/install in progress; on battery only at 50% or more to START and above 25% to continue/resume (plugged in:
+# no rule; "plugged in" is the power supply's `online` flag, never `status`, which reads "Not charging" at 100% on USB power); thermal: a running build pauses at
+# 70 C, a stopped one resumes/starts at 60 C or below. An unreadable battery level or temperature blocks the build (fail closed).
+# decide() is a pure function of the state and the phase so the table can be tested without a device; the readers take their roots as arguments.
+import glob, json, os, sys, time
+
+IDLE_S, BATTERY_START, BATTERY_FLOOR, TEMP_PAUSE, TEMP_RESUME = 300, 50, 25, 70.0, 60.0
+RUN = os.environ.get('WISP_GATE_RUN', '/run')
+
+
+def read(path):
+    with open(path, errors='replace') as f: return f.read()
+
+STEAM_ACTIVE_BITS = 256 | 1024          # appmanifest StateFlags: UpdateRunning, UpdateStarted. An install in progress read 1026 (2+1024), a finished one 4 (device, 2026-10-10)
+
+
+def decide(state, phase):
+    """(allowed, reason). `phase` is 'idle' (nothing started), 'running' or 'paused' (stopped by a gate): starting needs more headroom than continuing."""
+    if state['game']: return False, 'a game is running'
+    if state['idle_s'] < IDLE_S: return False, 'input %d s ago (needs %d s of quiet)' % (state['idle_s'], IDLE_S)
+    if state['steam_busy']: return False, 'a Steam download or install is in progress'
+    if state['has_battery'] and not state['on_ac']:
+        pct = state['battery_pct']
+        if pct is None: return False, 'on battery and the level is unreadable'
+        if phase == 'idle' and pct < BATTERY_START: return False, 'on battery at %d%% (a build starts at %d%%)' % (pct, BATTERY_START)
+        if pct <= BATTERY_FLOOR: return False, 'on battery at %d%% (a build pauses at %d%%)' % (pct, BATTERY_FLOOR)
+    t = state['temp_c']
+    if t is None: return False, 'temperature unreadable'
+    if phase == 'running' and t >= TEMP_PAUSE: return False, '%.0f C (a build pauses at %.0f C)' % (t, TEMP_PAUSE)
+    if phase != 'running' and t > TEMP_RESUME: return False, '%.0f C (a build starts or resumes at %.0f C or below)' % (t, TEMP_RESUME)
+    return True, 'all conditions met'
+
+
+def next_phase(phase, allowed):
+    """The caller's bookkeeping: allowed -> running; blocked while running -> paused; otherwise unchanged. A finished build goes back to 'idle' (the caller's decision)."""
+    if allowed: return 'running'
+    return 'paused' if phase == 'running' else phase
+
+
+def game_running(proc='/proc'):
+    for d in glob.glob(proc + '/[0-9]*'):
+        try:
+            with open(d + '/cmdline', 'rb') as f: argv = f.read().split(b'\0')
+        except OSError: continue
+        if argv and os.path.basename(argv[0].decode('utf-8', 'replace')) == 'reaper' and b'SteamLaunch' in argv: return True
+    return False
+
+
+def steam_busy(steamapps_dirs):
+    """True when any app manifest says an update is running or started."""
+    for d in steamapps_dirs:
+        for acf in glob.glob(os.path.join(d, 'appmanifest_*.acf')):
+            try: text = read(acf)
+            except OSError: continue
+            for line in text.splitlines():
+                parts = line.split('"')
+                if len(parts) >= 4 and parts[1] == 'StateFlags' and parts[3].isdigit() and int(parts[3]) & STEAM_ACTIVE_BITS: return True
+    return False
+
+
+def power(sys_root='/sys'):
+    """(has_battery, on_ac, battery_pct): on_ac if any non-battery supply is online; pct from the first battery with a readable capacity."""
+    has_battery, on_ac, pct = False, False, None
+    for d in sorted(glob.glob(sys_root + '/class/power_supply/*')):
+        try: kind = read(d + '/type').strip()
+        except OSError: continue
+        if kind == 'Battery':
+            has_battery = True
+            if pct is None:
+                try: pct = int(read(d + '/capacity').strip())
+                except (OSError, ValueError): pass
+        else:
+            try: on_ac = on_ac or read(d + '/online').strip() == '1'
+            except OSError: pass
+    return has_battery, on_ac, pct
+
+
+def max_temp_c(sys_root='/sys'):
+    """Hottest thermal zone in degrees C (the build must respect the hottest one), None when none is readable."""
+    temps = []
+    for z in glob.glob(sys_root + '/class/thermal/thermal_zone*/temp'):
+        try: temps.append(int(read(z).strip()) / 1000.0)
+        except (OSError, ValueError): pass
+    return max(temps) if temps else None
+
+
+def idle_seconds(now=None, marker=None, uptime_file='/proc/uptime'):
+    """Seconds since the last input: the marker's age, or the uptime when nobody has touched the device since boot."""
+    now = time.time() if now is None else now
+    try: return max(0.0, now - os.stat(marker or RUN + '/wisp-last-input').st_mtime)
+    except OSError:
+        try: return float(read(uptime_file).split()[0])
+        except (OSError, ValueError, IndexError): return 0.0
+
+
+def steamapps_dirs(vdf='/storage/wispos/home/.local/share/Steam/steamapps/libraryfolders.vdf'):
+    """The steamapps directory of every Steam library folder (read from Steam's own list, so a card added as a library is covered)."""
+    out = []
+    try: lines = read(vdf).splitlines()
+    except OSError: return out
+    for line in lines:
+        parts = line.split('"')
+        if len(parts) >= 4 and parts[1] == 'path': out.append(os.path.join(parts[3], 'steamapps'))
+    return out
+
+
+def snapshot(proc='/proc', sys_root='/sys', steamapps_dirs=(), now=None, marker=None):
+    has_battery, on_ac, pct = power(sys_root)
+    return {'game': game_running(proc), 'idle_s': int(idle_seconds(now, marker)), 'steam_busy': steam_busy(steamapps_dirs), 'has_battery': has_battery, 'on_ac': on_ac,
+            'battery_pct': pct, 'temp_c': max_temp_c(sys_root)}
+
+
+def main(argv):
+    phase = 'idle'
+    if '--phase' in argv: phase = argv[argv.index('--phase') + 1]
+    if phase not in ('idle', 'running', 'paused'): sys.exit('phase must be idle, running or paused')
+    state = snapshot(steamapps_dirs=steamapps_dirs())
+    allowed, reason = decide(state, phase)
+    print(json.dumps({'allowed': allowed, 'reason': reason, 'state': state}))
+    return 0 if allowed else 1
+
+
+if __name__ == '__main__': sys.exit(main(sys.argv[1:]))

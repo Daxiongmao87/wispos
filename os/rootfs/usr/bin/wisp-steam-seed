@@ -1,0 +1,129 @@
+#!/usr/bin/python3
+"""WispOS: make Steam's global default compatibility tool the ARM64 Proton, before every Steam start (run by wisp-steam-session; Steam must not be running).
+Which tool: our own custom tool `Proton11-ARM64-A57-v80` (the community standalone ARMv8.0 build, installed under compatibilitytools.d; Steam never validates or
+updates a custom tool, whereas Valve's own `Proton 11.0 (ARM64)` is re-validated and updated by Steam, which undoes any change made to it: docs/WISPOS-NOTES.md,
+"DESIGN FINDING") when it is installed, otherwise Valve's `proton-stable`. A default we seeded earlier (`proton-stable`, priority 75) is upgraded to the custom
+tool once it exists; any other default (the user's own choice) is never touched.
+
+Why: with no default, Steam queues the x86 "Proton Experimental" + FEX + a second runtime (about 2.2 GB) that cannot run on this device (the FEX path needs a guest
+rootfs and graphics provider this image does not have; docs/WISPOS-NOTES.md, Worms Armageddon install) and then fetches the ARM64 stack only when told per game.
+What it does: in config.vdf, InstallConfigStore/Software/Valve/Steam/CompatToolMapping, add the global entry "0" = proton-stable if there is no entry "0". An existing
+"0" entry (the user's own choice in Steam's settings) is never touched. Everything else in the file is left as it is (text edit, not a rewrite). If no config.vdf
+exists yet (first start) a minimal one is written; Steam fills in the rest.
+usage: wisp-steam-seed [CONFIG_VDF]   (default /storage/wispos/home/.local/share/Steam/config/config.vdf)   exit 0 = fine (seeded or nothing to do), 1 = file not understood (left alone)
+"""
+import os, re, sys
+
+DEFAULT = '/storage/wispos/home/.local/share/Steam/config/config.vdf'
+STEAM_ROOT = '/storage/wispos/runtime/steam'
+CUSTOM_TOOL = 'Proton11-ARM64-A57-v80'          # the internal name in its compatibilitytool.vdf
+SEED_PRIORITY = '75'                            # our signature: a default with this priority was written by us
+
+
+def entry(tool):
+    return '"0"\n{\n\t"name"\t\t"%s"\n\t"config"\t\t""\n\t"priority"\t\t"%s"\n}\n' % (tool, SEED_PRIORITY)
+
+
+def wanted_tool(steam_root=STEAM_ROOT):
+    """The custom tool when it is installed, else Valve's."""
+    return CUSTOM_TOOL if os.path.exists(os.path.join(steam_root, 'compatibilitytools.d', CUSTOM_TOOL, 'compatibilitytool.vdf')) else 'proton-stable'
+
+
+def indent(block, tabs):
+    return ''.join(('\t' * tabs + l if l.strip() else l) for l in block.splitlines(True))
+
+
+def mapping_block(tabs, tool):
+    return indent('"CompatToolMapping"\n{\n' + indent(entry(tool), 1) + '}\n', tabs)
+
+
+def minimal(tool):
+    inner = mapping_block(0, tool)
+    for key in ('Steam', 'Valve', 'Software', 'InstallConfigStore'):
+        inner = '"%s"\n{\n%s}\n' % (key, indent(inner, 1))
+    return inner
+
+
+def block_end(lines, open_idx):
+    """Index of the line holding the brace that closes the block opened at lines[open_idx] ('{')."""
+    depth = 0
+    for i in range(open_idx, len(lines)):
+        s = lines[i].strip()
+        if s == '{': depth += 1
+        elif s == '}':
+            depth -= 1
+            if depth == 0: return i
+    return None
+
+
+def find_block(lines, name, start=0, stop=None):
+    """(key_idx, open_idx, close_idx) of the first direct-or-nested block called name between start and stop, or None."""
+    stop = len(lines) if stop is None else stop
+    for i in range(start, stop - 1):
+        if lines[i].strip() == '"%s"' % name and lines[i + 1].strip() == '{':
+            end = block_end(lines, i + 1)
+            if end is not None: return i, i + 1, end
+    return None
+
+
+def seed(text, tool='proton-stable'):
+    """(new text, status): 'seeded' (entry added), 'upgraded' (our own earlier proton-stable seed now points at `tool`), 'present' (a default exists; left alone)
+    or 'unrecognised' (text returned unchanged)."""
+    if not text.strip(): return minimal(tool), 'seeded'
+    lines = text.splitlines(True)
+    if not lines[-1].endswith('\n'): lines[-1] += '\n'
+    steam = None
+    here = (0, len(lines))
+    for name in ('InstallConfigStore', 'Software', 'Valve', 'Steam'):
+        b = find_block(lines, name, *here)
+        if b is None: return text, 'unrecognised'
+        here = (b[1] + 1, b[2]); steam = b
+    key, op, cl = steam
+    depth = len(lines[key]) - len(lines[key].lstrip('\t')) + 1
+    cm = find_block(lines, 'CompatToolMapping', op + 1, cl)
+    if cm is None:
+        lines[op + 1:op + 1] = [mapping_block(depth, tool)]
+        return ''.join(lines), 'seeded'
+    ckey, cop, ccl = cm
+    d, i = 0, cop + 1
+    while i < ccl:                              # direct children of the mapping block: is there an entry "0"?
+        s = lines[i].strip()
+        if s == '{': d += 1
+        elif s == '}': d -= 1
+        elif d == 0 and s == '"0"':
+            end = block_end(lines, i + 1) if lines[i + 1].strip() == '{' else None
+            if end is None: return text, 'present'
+            fields = {}
+            for j in range(i + 2, end):
+                m = re.match(r'^\s*"(name|priority)"\s+"([^"]*)"\s*$', lines[j])
+                if m: fields[m.group(1)] = (j, m.group(2))
+            ours = fields.get('name', (0, ''))[1] == 'proton-stable' and fields.get('priority', (0, ''))[1] == SEED_PRIORITY
+            if ours and tool != 'proton-stable':
+                j = fields['name'][0]
+                lines[j] = lines[j].replace('"proton-stable"', '"%s"' % tool, 1)
+                return ''.join(lines), 'upgraded'
+            return text, 'present'
+        i += 1
+    lines[cop + 1:cop + 1] = [indent(entry(tool), depth + 2)]
+    return ''.join(lines), 'seeded'
+
+
+def main(argv):
+    path = argv[0] if argv else DEFAULT
+    steam_root = argv[1] if len(argv) > 1 else STEAM_ROOT
+    old = open(path, encoding='utf-8').read() if os.path.exists(path) else ''
+    tool = wanted_tool(steam_root)
+    new, status = seed(old, tool)
+    if status == 'unrecognised':
+        print('wisp-steam-seed: %s has an unexpected structure; left alone' % path); return 1
+    if status in ('seeded', 'upgraded'):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        mode = os.stat(path).st_mode & 0o777 if os.path.exists(path) else 0o644
+        tmp = path + '.wisp-seed'
+        with open(tmp, 'w', encoding='utf-8') as f: f.write(new)
+        os.chmod(tmp, mode); os.replace(tmp, path)
+    print('wisp-steam-seed: default compatibility tool %s' % ({'seeded': 'set to ' + tool, 'upgraded': 'moved to ' + tool}.get(status, 'already chosen')))
+    return 0
+
+
+if __name__ == '__main__': sys.exit(main(sys.argv[1:]))

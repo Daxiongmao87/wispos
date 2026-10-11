@@ -1,0 +1,65 @@
+#!/usr/bin/python3
+"""WispOS: put the FEX project's OFFICIAL Windows modules into the community Proton tool (stock upstream binaries, nothing built by us).
+
+Why: the community ARMv8.0 Proton we ship carries FEX-2605, which has no DEP-disabled mode, so pre-NX 32-bit programs that run code from read/write memory (RollerCoaster Tycoon
+Deluxe, Carmageddon 2, Quake III's QVM JIT) die with "NoExec instruction in entry block". The FEX project's own fex-emu-wine package (2610) is ARMv8.0-clean (0 LSE/RCPC
+instructions) and has the mode. The image carries that package's four files unmodified in /usr/share/wispos/fex-official (hash-pinned in official-fex.lock.json, put there at
+image build time); this program copies them over the tool's. Operator ruling 2026-10-10: no custom FEX builds, upstream binaries only (docs/WISPOS-COMPAT-LAYER-SPEC.md).
+What it does: for each file in the lock, if the tool's copy already has the pinned sha256, nothing; otherwise the tool's original is kept once under <tool>/.wisp-orig/ and the
+official file replaces it atomically. A receipt <tool>/.wisp-fex-official.json records the package and file hashes. Idempotent; a tool that is not installed yet (first run is
+still downloading it) is not an error; a tool replaced by a new archive simply gets the files again at the next session start.
+Not covered: Valve's own wow64.dll (the half that tells FEX the process has DEP disabled) comes from Valve's Proton app after sign-in, a separate step.
+usage: wisp-fex-official        exit 0 = fine or nothing to do, 1 = a pinned file is missing/corrupt in the image or could not be written
+"""
+import hashlib, json, os, shutil, sys
+from pathlib import Path
+
+SRC = Path(os.environ.get('WISP_FEX_OFFICIAL_SRC', '/usr/share/wispos/fex-official'))
+TOOLS = Path(os.environ.get('WISP_COMPAT_TOOLS', '/storage/wispos/runtime/steam/compatibilitytools.d'))
+
+
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''): digest.update(block)
+    return digest.hexdigest()
+
+
+def apply(src=SRC, tools=TOOLS):
+    """Returns (ok, messages). Copies only what differs; never leaves a half-written file in place."""
+    lock = json.loads((src / 'official-fex.lock.json').read_text())
+    tool = tools / lock['tool']
+    if not tool.is_dir(): return True, [f'{lock["tool"]} is not installed yet: nothing to do']
+    plan = []                                    # check EVERYTHING before writing anything: a damaged image or lock must never leave the tool half-converted
+    for entry in lock['files']:
+        rel, want = entry['tool_path'], entry['sha256']
+        if rel.startswith('/') or '..' in Path(rel).parts: return False, [f'unsafe path in the lock: {rel}']
+        source = src / entry['member'].rsplit('/', 1)[1]
+        if not source.is_file() or sha256_of(source) != want: return False, [f'{source.name} is missing or does not match the lock: the image is damaged']
+        plan.append((rel, want, source, tool / rel))
+    messages, done = [], {}
+    for rel, want, source, dest in plan:
+        done[rel] = want
+        if dest.is_file() and not dest.is_symlink() and sha256_of(dest) == want: continue
+        try:
+            orig = tool / '.wisp-orig' / rel
+            if (dest.exists() or dest.is_symlink()) and not orig.exists():
+                orig.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(dest, orig, follow_symlinks=False)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name('.' + dest.name + '.wisp-new')
+            shutil.copyfile(source, tmp); os.chmod(tmp, 0o755); os.replace(tmp, dest)
+        except OSError as e:
+            return False, [f'could not write {rel}: {e}']
+        messages.append(f'{rel}: official {lock["version"]}')
+    receipt = {'package': lock['package'], 'version': lock['version'], 'package_sha256': lock['sha256'], 'files': done}
+    (tool / '.wisp-fex-official.json').write_text(json.dumps(receipt, indent=1) + '\n')
+    return True, messages or [f'{lock["tool"]}: official FEX modules {lock["version"]} already in place']
+
+
+def main():
+    ok, messages = apply()
+    for m in messages: print('wisp-fex-official:', m)
+    return 0 if ok else 1
+
+
+if __name__ == '__main__': sys.exit(main())

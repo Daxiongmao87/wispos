@@ -1,0 +1,21 @@
+#!/bin/sh
+# DEV BUILDS ONLY (this file is not in release images). Tells the developer's machine that this device is up and where it is, as
+# soon as it has an address, so SSH access for diagnosis does not depend on finding the device on the network. It works on the LAN
+# alone, so it still reaches the developer if the internet check fails. Target: "announce=HOST:PORT" in /flash/wispos/dev.conf.
+# Sends no secrets: hostname, address, MAC, kernel, uptime, system state and the names of failed units.
+conf=/flash/wispos/dev.conf
+target=$(sed -n 's/^announce=//p' "$conf" 2>/dev/null | head -n1 | tr -d '\r ')
+[ -n "$target" ] || exit 0
+while :; do
+    line=$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(lo|docker|usb|gadget)/ {print $2, $4; exit}')
+    dev=${line%% *}; ip=${line#* }; ip=${ip%%/*}
+    if [ -n "$dev" ] && [ -n "$ip" ] && [ "$dev" != "$line" ]; then
+        mac=$(cat "/sys/class/net/$dev/address" 2>/dev/null)
+        failed=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+        body=$(printf '{"hostname":"%s","dev":"%s","ip":"%s","mac":"%s","kernel":"%s","uptime":%s,"state":"%s","failed":"%s","ssh_user":"root"}' \
+            "$(hostname)" "$dev" "$ip" "$mac" "$(uname -r)" "$(cut -d. -f1 /proc/uptime)" "$(systemctl is-system-running 2>/dev/null)" "$failed")
+        if curl -sS -m 5 -X POST -H 'Content-Type: application/json' --data "$body" "http://$target/hello" >/dev/null 2>&1; then sleep 60; else sleep 8; fi
+    else
+        sleep 4
+    fi
+done

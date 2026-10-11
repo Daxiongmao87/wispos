@@ -1,0 +1,15 @@
+#!/bin/sh
+# wisp-screen wake|on|off|status|inhibit on|inhibit off: the panel's power, for people and for scripts.
+#   wake      screen on and restart the idle timer (use this before a screenshot: `grim` cannot capture an output that is off)
+#   on / off  screen on / off now (off also stops the idle timer from waking it by itself until the next button press)
+#   inhibit   `inhibit on` keeps the screen on (the first-run setup uses it while it shows progress); `inhibit off` lets it blank again
+# The idle watcher is wisp-screen-idle. Power off = sway `output DSI-1 power off`, which also turns the backlight off (bl_power 4, DPMS Off).
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}; SWAYSOCK=${SWAYSOCK:-$XDG_RUNTIME_DIR/sway-ipc.0.sock}; export SWAYSOCK
+RUN=${WISP_SCREEN_RUN:-/run}; BL=${WISP_BACKLIGHT:-/sys/class/backlight/backlight/bl_power}
+case "${1:-}" in
+    wake|on) : >"$RUN/wisp-screen-wake"; exec swaymsg output DSI-1 power on >/dev/null ;;
+    off) exec swaymsg output DSI-1 power off >/dev/null ;;
+    status) [ "$(cat "$BL" 2>/dev/null)" = 0 ] && echo on || echo off ;;
+    inhibit) case "${2:-}" in on) : >"$RUN/wisp-screen-inhibit" ;; off) rm -f "$RUN/wisp-screen-inhibit" ;; *) echo "usage: wisp-screen inhibit on|off" >&2; exit 2 ;; esac ;;
+    *) echo "usage: wisp-screen wake|on|off|status|inhibit on|off" >&2; exit 2 ;;
+esac

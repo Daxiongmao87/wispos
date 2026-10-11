@@ -1,0 +1,6 @@
+#!/bin/sh
+# Hard-killed Steam/Chromium sessions leave shared-memory files (about 26 MB each; 355 MB
+# seen) that sit in RAM or swap until reboot. Remove them before a new session starts.
+# Must run only while no Steam process is alive (the unit uses it as ExecStartPre).
+rm -f /dev/shm/u0-Shm_* /dev/shm/.org.chromium.* /dev/shm/.com.google.* 2>/dev/null
+exit 0

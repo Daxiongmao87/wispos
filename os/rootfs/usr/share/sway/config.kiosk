@@ -1,0 +1,11 @@
+seat * hide_cursor 1000
+default_border none
+exec_always mako
+# WispOS: without gamescope nothing makes a game fullscreen. Steam starts each game as its own X11 window with class steam_app_<id>; sway left it a
+# floating window with a title bar, smaller than the panel (BIT.TRIP RUNNER: 720x405 below a 25 px bar on the 720x480 panel). Give it the whole panel.
+for_window [class="^steam_app_.*"] border none, fullscreen enable
+# WispOS default: half resolution. Steam's UI and games are laid out for a 360x240 screen and sway scales that up 2x to the 720x480 panel: measured on the
+# handheld (2026-10-09) it feels more responsive and the GPU stays at its lowest clock while the UI animates; native 720x480 stays selectable (see the display settings).
+# Linear filtering: nearest showed heavy aliasing on the UI (a glyph is a few pixels tall at 360x240).
+output DSI-1 scale 2
+output DSI-1 scale_filter linear

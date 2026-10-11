@@ -1,0 +1,16 @@
+# Turns the panel (and its backlight) off after a period without button presses and back on at the next press; see /usr/bin/wisp-screen-idle.
+[Unit]
+Description=WispOS screen blanking when idle
+After=sway.service
+Wants=sway.service
+
+[Service]
+Environment=XDG_RUNTIME_DIR=/var/run/0-runtime-dir
+Environment=SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
+ExecStart=/usr/bin/wisp-screen-idle
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=wispos.target

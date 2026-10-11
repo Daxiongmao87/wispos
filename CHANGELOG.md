@@ -1,0 +1,537 @@
+# Changelog
+
+All notable changes to this project are documented here, following
+[Keep a Changelog](https://keepachangelog.com/) conventions and the SemVer
+policy in `AGENTS.md`.
+
+## [Unreleased]
+
+### Added
+
+- **SteamOS contract, first slice (feature, MINOR; operator roadmap effort 2):** `os/steamos/wisp-steamos-manager.c`, a small C sd-bus daemon (one binary, two roles) that answers what Steam's UI asks the OS for: `com.steampowered.Atomupd1` on the SYSTEM bus (the whole update interface with a pluggable helper: check, start, progress, pause, resume, cancel, failure codes; plus `DisableHttpProxy`, which Steam calls at start-up and which Valve's public file lacks) and `com.steampowered.SteamOSManager1` `Manager2` + `CpuScaling1` on the SESSION bus (the device model and the real cpufreq governors). The bus layout was MEASURED on the device (Steam starts SteamOSManager1 by session-bus activation and calls Atomupd1 on the system bus; docs/WISPOS-NOTES.md). Tested against Valve's own interface XML (vendored, MIT: `os/steamos/interfaces/`) member by member on a private bus (`os/test_steamos_manager.py`, 28 tests), wired into the image build (hash-pinned systemd headers, linked against the image's libsystemd, activation files, unit, policy; `SteamosManagerWiringTests`). The update helper (`wisp-update`: manifest, download, hash and signature check, staging next to the running SYSTEM) is NOT written yet, so a check reports that the helper cannot run; Steam's own UI is unchanged because the shipped command line does not enable the SteamOS UI switches.
+- **Steam's System page, measured and wired (change + feature, MINOR; effort 2):** run against our daemon on the device, Steam's UI turned out to update through SCRIPTS (`/usr/bin/steamos-polkit-helpers/steamos-update`: `check` exit 0/7, install prints `NN%`), not through `Atomupd1`; new `os/rootfs/usr/bin/steamos-polkit-helpers/steamos-update` implements that contract over `wisp-update`. Steam looks for the SteamOS manager once at start-up and then calls `ObjectManager.GetManagedObjects` at `/`: the daemon now exports an ObjectManager at `/`, and new `wisp-steam-launch` starts the manager inside Steam's session bus before Steam (the "daemon not present" log lines are gone). `-steamos3` alone enables the whole integration; `-steamdeck` is not needed (not yet shipped: a permanent warning gear remains, see the notes). New producer tool `os/make-release.py` (keygen, signed manifest, the four release assets; a release it makes is checked and staged by the real device helper in a round-trip test) and the committed public signing key `os/steamos/update-key.pub`. 13 + 8 + 1 new tests.
+- **Steam UI memory ceiling `wisp-ui-reclaim` (feature, MINOR; operator-locked plan item 1; INSTALLED BUT NOT ENABLED):** `os/reclaim/wisp-ui-reclaim.c` (plain C, under 1 MB) puts the `steamwebhelper` processes into a cgroup-v2 group with a `memory.high` ceiling (300 MiB; 96 MiB while a game runs, i.e. while Steam's per-game `reaper` exists) and, with `--freeze`, freezes the group while a game runs; it lifts both when it stops and at start. It must run before Steam starts: pages are charged to the cgroup current at allocation, so a helper moved in hours later has nothing charged. On the device a simulated game start took the UI group from 245 MB to 76 MB in 3 s (+75-90 MB available, the rest in zram). **With `--freeze` the reduced ceiling and the freeze apply only while the Steam UI is not the focused window (sway window events: class exactly `steam`; fail-safe to visible).** **The Quake III A/B (docs/WISPOS-NOTES.md): the ceiling alone makes the still-running UI thrash (UI 84% of a core instead of 21%, game 25.0 fps against 28.3); ceiling + freeze is quiet and stable (27.7 fps, sd 0.06) but about 1 fps below base in a fresh session.** So it is not enabled by default: it needs a long-uptime A/B, a second game and a visibility rule (the Steam button must thaw the UI). 17 tests against fake `/proc`, cgroup trees and a scripted sway event stream, mutation-checked; dev lever `perf-set.sh ui-reclaim-on [--freeze]` and sweep variants `reclaim` / `reclaimfreeze`.
+- **Update helper `wisp-update` and the release-hardening finding on tty9 (feature + security fix, MINOR; effort 2/4):** `os/steamos/wisp-update` (Python stdlib + the image's `openssl`) is the helper the SteamOS daemon runs: `check` fetches and VERIFIES an ed25519-signed manifest (wrong key, tampering, malformed fields, other device or variant, older or equal build, plain http: all refused), `apply` stages KERNEL and SYSTEM into `/flash/wispos/update` with resume, size and sha256 checks, a free-space check before the first byte, `READY` written last, `/flash` writable only while staging, partial files removed on cancel. 27 tests against a local server with fault injection plus 4 end-to-end tests through the daemon (`os/test_wisp_update.py`, `os/test_steamos_manager.py`); mutation-checked. An image has no update source until the release process gives it one (`WISP_UPDATE_MANIFEST_URL` + `WISP_UPDATE_PUBKEY_FILE`, all-or-nothing, https only); until then a check says "no update source is configured". **Security fix:** `debug-shell.service` was enabled in every boot (an unauthenticated root shell on virtual console 9, reachable by any keyboard, e.g. a USB keyboard once OTG host exists); the enablement is pruned and `check_rootfs.py` now fails any image that contains it (`FORBIDDEN`). The apply-at-boot step (initramfs hook) and the rollback are designed in `docs/WISPOS-UPDATE-DESIGN.md`, not built.
+- **WispOS identity in `/etc/os-release`, and the update design (change, MINOR; effort 2/4):** the image now carries the standard `NAME`, `ID`, `PRETTY_NAME`, `VERSION_ID` and a real `BUILD_ID` (`YYYYMMDD.N`, from `WISP_BUILD_ID` or the pinned build date) instead of ROCKNIX's git hash, and drops `GIT_ORGANIZATION`/`GIT_REPO` (nothing reads them); the SteamOS daemon reports them as `CurrentVersion`/`CurrentBuildID`. `docs/WISPOS-UPDATE-DESIGN.md` designs the rest of on-device updates (signed manifest on an upstream origin, staged copy, initramfs apply step, rollback marker) and lists three decisions for the operator.
+- **One UI design language, with the first-time setup screen as its reference (change, MINOR; operator 2026-10-11):** `docs/WISPOS-UI-LANGUAGE.md` and `os/ui/wisp-ui.h` define the palette (Steam's, read from its stylesheets), type scale, layout grid and components; `os/setup/wisp-setup.c` now takes its palette, radius and panel geometry from the header (values unchanged); a rule in `AGENTS.md` makes every new screen use it. **Boot splash prototype in that language** (`os/splash/wisp-splash.c`, `os/ui/gen_assets.py`, `os/test_splash.py`, design in docs/WISPOS-SPLASH-DESIGN.md): identity column, round-dot spinner, one stage row, key-pill hint, setup-style failure screen, a console toggle (KD_GRAPHICS/KD_TEXT) and an automatic log on failure; host-tested on a fake framebuffer and cross-compiled for aarch64; **patched initramfs** (`os/boot/patch_initramfs.py`, `make-initramfs.sh`: exactly one entry replaced and one added in ROCKNIX's reference archive) and a **QEMU boot test** (`os/boot/qemu_splash_test.py`: splash on a virtual 720x480 panel, survives `switch_root`, takes `status`/`ready` through its FIFO); **wired into the image build** (`wisp-splash-say`, a `sway.service` drop-in, the setup unit's `--ready`, boot arguments `logo.nologo vt.global_cursor_default=0` plus `quiet loglevel=3 systemd.show_status=true` on release images, `wisp.dev` on dev images; `SplashWiringTests`); not yet built into an image or on the device.
+- **Dev: profiler follow-ups and Steam switch lever (feature, MINOR for dev builds; release unchanged):** `perf-stream.py` now samples what the busiest game thread is doing 20 times a second (running, or sleeping in which system call) and names that thread; `perf-record.sh` stamps samples with wall-clock time and `perf-report.sh` reports any window of the run, which `perf-run.sh` takes from the steady play phase found in the 1 Hz trace (`perf-summary.py --window`); the flight recorder is a single `awk` per round (no `top`, no process scan); `perf-set.sh` switches governors and writes Proton's own `user_settings.py` (a global per-tool environment, self-reverting); `steam-args.sh` restarts Steam with extra command-line switches from a RAM copy of the session script. Tests: `PerfSetTests`, `SteamArgsTests`, `PerfStreamTests`.
+- **Dev: a layered game profiler that writes nothing on the card (feature, MINOR for dev builds; release unchanged; operator 2026-10-11 "a frametime/framerate profiler ... explaining all components"):** `os/dev/perf-run.sh LABEL` runs the Quake III timedemo with the layers you choose and keeps everything on the HDD: `stream` (`diag/perf-stream.py`, 1 Hz: per-core load and clock, GPU clock, game vs Steam UI CPU by process tree, busiest threads by name, memory pressure), `stat` (`perf stat -I 1000`: IPC, branch and cache misses from the A53's PMU) and `record` (`diag/perf-record.sh`: a 499 Hz sampling profile kept in RAM and reported as CPU time by command, by component and by symbol). `perf-summary.py` reads a run. Each layer's own cost is measured against an unprofiled timedemo. Tests: `PerfStreamTests`.
+- **Dev: watch a device without writing to its card (feature, MINOR for dev builds; release unchanged; operator rule 2026-10-11 "write to disk sparingly ... capture the log stream over ssh as part of Dev"):** `os/dev/log-stream.sh` streams the device journal (`journalctl -f`, reconnecting and asking for what it missed) and `os/dev/diag/mem-stream.py` (piped into `python3 -` over ssh, never copied to the device; one JSON line per minute: memory, zram, pressure, every Steam process by role and age, KiB written to the boot and TF2 cards and which process wrote them) to files on the HDD; refuses a directory off the HDD. The dev recorder `wisp-dev-blackbox` and the watchdog `wisp-dev-watchdog` now log to the journal (RAM) instead of `/storage/wispos/logs`, and the recorder asks sway only every 30th round (every 10 s; sway's IPC leaks every reply). Tests: `WriteNothingTests`, `MemStreamTests`, `LogStreamTests` in `os/test_dev.py` (the first two were red against the old recorder and watchdog).
+- **Valve's own `wow64.dll` reaches the community Proton tool: Steam installs Valve's Proton app by itself, we copy one tested file (feature, MINOR; operator decision 2026-10-10 "a sounds fine"):** `wisp-wow64-valve` (new, run by `wisp-steam-session` after `wisp-fex-official`, before Steam starts) (1) when no Steam library has an app manifest for `Proton 11.0 (ARM64)` (app 4628740) and it was never requested, writes a minimal manifest with `StateFlags` 2 so Steam queues the download after sign-in with no dialog (requested once: a marker in `/storage/wispos/config`; Steam's Downloads page shows the progress); (2) once the app reads `StateFlags` 4 with no update running, copies its `wow64.dll` over the tool's (atomic, original kept once in `.wisp-orig/`) ONLY if its sha256 is on `steam/valve-wow64.lock.json` `known_good` (today the 11.0-2e build `b3617499...` that was measured). An unknown hash (a newer Valve build) is not used and is reported. With the official FEX modules this closes the Windows DEP gap. Test: `test_wisp_wow64_valve_requests_the_app_once_and_copies_only_a_tested_file`. Verified on the first fresh flash (2026-10-11): within two seconds of the operator's sign-in Steam queued and started the download (471 MB) from the minimal manifest, with no dialog. `wisp-wow64-valve.path` + `.service` (new) run the same program whenever Steam rewrites that manifest, because the install finishes minutes after the session script already ran for that start; test `test_wow64_copy_runs_when_steam_rewrites_the_valve_proton_manifest_not_only_at_steam_start`. Still to be shown: the copy after the install, and the in-app path of the file (`files/lib/wine/aarch64-windows/wow64.dll`, from Proton's layout).\n- **The FEX project's OFFICIAL Windows modules go into the community Proton tool: the Windows DEP gap is closed with stock upstream binaries (feature, MINOR; operator-approved 2026-10-10, no custom FEX builds):** `steam/official-fex.lock.json` pins `fex-emu-wine` 2610-1~n (upstream package pool, sha256 `edd6a826...`, and the sha256 of each member). `build-rootfs.sh` fetches it (cached, hash-checked) and `stage_rootfs.install_official_fex` bakes ONLY the four pinned files (+ the MIT `copyright`) into `usr/share/wispos/fex-official/`, unmodified; it refuses a package or member that does not match, a wrong name/version/architecture, or a missing member. `wisp-fex-official` (new, run by `wisp-steam-session` before every Steam start, before `wisp-proton-patch`) copies them over `libwow64fex.dll`/`libarm64ecfex.dll` in `files/lib/wine/aarch64-windows` and adds the two unix `.so` in `aarch64-unix` (the default prefix's copies are links to those files), keeps each original once under `.wisp-orig/`, writes a receipt, validates every file before writing any, and does nothing while the tool is still being downloaded. Measured on the device with exactly these files (docs/WISPOS-NOTES.md, STOCK-BINARY RESULT): Quake III 26.4 fps without `NoExec`, Worms Armageddon unchanged, Carmageddon 2 past `NoExec`. STILL NEEDED for the full fix: Valve's own `wow64.dll` after sign-in (spec 2a, decided: Steam installs Valve's Proton app). Tests: `test_official_fex_package_is_unpacked_only_as_pinned_and_refused_otherwise`, `test_official_fex_lock_pins_the_tested_package_and_the_tool_it_targets`, `test_wisp_fex_official_installs_keeps_originals_once_and_is_idempotent`. Not in a booted image yet.
+- **`wisp-compat-gate`: may the on-device compatibility build run right now? (feature, MINOR; first piece of docs/WISPOS-COMPAT-LAYER-SPEC.md, nothing calls it yet):** a pure `decide(state, phase)` plus readers. Blocks while a game runs (`reaper ... SteamLaunch`), until 5 minutes without input, while any Steam app manifest has `StateFlags` 256/1024 set (install or update running), on battery below 50% to start or at 25% and under to continue/resume (plugged in = a non-battery supply with `online=1`; `status` is never used), and by temperature (a running build pauses at 70 C, a stopped one starts/resumes at 60 C or below); an unreadable level or temperature blocks. `wisp-screen-idle` now touches `/run/wisp-last-input` on every press, so the gate and the screen share one definition of activity. Tests: `test_compat_gate_decision_table_follows_the_locked_spec`, `test_compat_gate_readers_use_the_signals_the_device_really_has`, `test_screen_idle_marks_every_input_for_the_compat_gate`. Not run on the device yet (the sysfs names of the battery, USB supply and thermal zones are read generically, to be confirmed there).
+- **Native Linux x86 games get a guest root when one exists (feature, MINOR):** `wisp-steam-session` exports `STEAM_COMPAT_GRAPHICS_PROVIDER` (the FEX project's Ubuntu 24.04 RootFS unpacked at `/storage/wispos/guestos/ubuntu-24.04`) and `STEAM_COMPAT_FEX_CONFIG` (`TSOEnabled:1 Multiblock:1 ThunksDB_GL:1`) when `graphics_provider.json` is there; without them Valve's FEX tool exits silently and no native Linux game opens a window. Measured on the handheld with no per-game options: Half-Life (1998), Half-Life: Blue Shift (2001) and Day of Defeat (2003) reach their main menus. Test: `test_native_linux_games_get_the_guest_root_and_graphics_provider_only_when_it_exists`. NOTE (operator ruling 2026-10-10, "any custom fex builds goes against the point"): the results above used FEX executables rebuilt for ARMv8.0, which is NOT adopted; with Valve's stock FEX executables (built with LSE) no native Linux game starts on this CPU, so this export is inert until a stock build runs on the H700.
+- **Python and other programs no longer die at start-up under Steam's overlay: the SIGILL fallback is linked `-z initfirst` (fix, PATCH):** Steam's overlay hooks libc `close()`/`open()`/`read()`/`dlopen()`/`dlsym()` with LSE atomics the Cortex-A53 lacks, and a program whose library constructors call one of them (Python through libGL/libX11/libpython, such as Valve's `fex-compat-tool`) ran the hook before the fallback's constructor existed (dependencies initialise before every preload) and was killed by SIGILL before running any code: no Steam-launched native Linux game ever started. The preload's constructor now runs before every other object's. Test: `steam/test_lse_initfirst.py` (QEMU cortex-a53 with a hand-encoded `casal` hook; red without the flag, green with it). Measured on the device in Steam's exact launch environment: Python exit status -4 (SIGILL) before, 0 after (4 of 4). The image's `libwispos-ldadd.sha256` changes with this build (the session script refuses to start Steam when it does not match). Not yet in a flashed image: tested on the device by bind-mounting the new library and hash file.
+- **Replacing the Steam client no longer deletes the user's games, logins and settings (fix, PATCH; closes a data-loss hazard found 2026-10-10):** `steam-install` used to `rmtree` the whole `runtime/steam` directory when the lock's client version changed, but that directory is also Steam's own data directory (`steamapps` 3.4 GB on the test device, `userdata`, `config`, logs, other tools; `~/.local/share/Steam` resolves to it). The installer now owns only the files of the client package, recorded in `meta/client-files.json`, and the compatibility tool's folder. A replacement checks for conflicts first (nothing changed if a package path would have to replace something that is not part of the package), removes `READY`, deletes only manifest files the new package no longer ships, merges the new files in one by one, writes the manifest and the lock, and writes `READY` last; it is repeatable after an interruption. A device installed before the manifest existed gets the merge without any deletion (a stale file is harmless, a lost game is not). The compatibility tool is no longer re-downloaded on a client version change. Tests: `ClientReplacementTests` (user data byte- and mtime-identical, no-manifest device, failed download changes nothing, hostile package paths refused with nothing changed, READY absent during the move; mutation-checked against the old wipe) and `test_a_new_client_version_keeps_the_tool_and_downloads_only_the_client`. Not rehearsed on the device's real 3.4 GB tree: do that with a copy before the first lock bump.
+- **Games no longer deadlock at their first 3D scene: the compatibility tool's launcher forces linear textures (fix, PATCH; workaround for a Mesa bug):** Mesa 26.2.2's panfrost driver (Mali-G31) writes 0x80 bytes past the end of a GPU buffer in a tiled `glTexSubImage2D` upload from a pixel buffer; Wine returns the access violation to the game, Mesa's mutex stays locked, and the game's next GL call deadlocks (seven starts of the same match out of seven hung; the thread's futex word was 2, its CPU time did not move for minutes). `wisp-proton-patch` now also makes the launcher of the custom tool set `PAN_MESA_DEBUG=linear` for every game process (added to flags the user already set, never duplicated; an older-patched launcher is upgraded at the next Steam start). With it the match ran at a mean of 45.7 fps (min 38.4) in the container. This is a workaround to delete when the image's Mesa is fixed; `noafbc` alone does not help, `nocache` and `noafbc` are not needed. Evidence, bisect and a draft upstream report (not filed): `docs/WISPOS-NOTES.md` "OPEN, CORE-LEVEL", `docs/upstream/mesa-panfrost-tiled-upload-overrun.md`. Test: `test_the_install_script_evaluation_is_not_repeated_once_it_has_succeeded` (extended; mutation-checked). Validated on one game so far (the operator's second-game choice is open); the Steam UI and the compositor do not get the setting.
+- **The UI watchdog logs why before it restarts Steam (feature, MINOR; diagnostics):** `wisp-steam-watch` now writes, before issuing the restart, the busiest web-helper threads (name, state, CPU jiffies, kernel wait, and for a thread blocked in a syscall its number and first arguments, which for a futex wait are the address and value) and the number of GPU page faults the kernel logged this boot, to the session log. Reason: a black or frozen UI used to be restarted without any trace (about 5 of 12 Steam starts on 2026-10-09/10 needed it), and the hung-game investigation of the same day showed that this evidence (a futex wait on a locked Mesa mutex plus a GPU fault count) identifies the cause. Test: `test_the_watchdog_leaves_evidence_in_the_log_before_it_restarts_steam` (fake `/proc` tree; ordering mutation-checked).
+- **Project intent stated in the governing docs (docs only, no behaviour change):** the whitepaper (open intent amendment), the North Star (first section) and the project `AGENTS.md` now say that the goal is general compatibility of Steam games through a strongly compatible core, that games are test vehicles, that per-game edits are diagnostics and are never shipped, and that a core fix needs a second unrelated game. Operator instruction, 2026-10-10. (`AGENTS.md` is gitignored: its copy is local; the tracked docs carry the same text.)
+- **The Steam UI watchdog no longer fills the compositor's memory (fix, PATCH):** sway 1.11 keeps about 8x the size of every IPC reply (measured on the handheld: ~42 kB per `get_tree`, linear; the compositor's heap was 286 MB after 19 h), and `wisp-steam-watch` asked `get_tree` every 15 s from the moment Steam started. It now asks sway only when the answer can change a decision: never before the 7-minute stall rule can fire, once every 15 minutes after a Steam window has been seen, every 15 s only while a miss is being confirmed (a simulated healthy hour: 4 questions instead of 240). Stall detection and the restart budget are unchanged. Test: `test_the_watchdog_asks_sway_only_when_the_answer_matters_because_sway_keeps_every_reply` (absolute bound, mutation-checked). The other callers of sway IPC (`wisp-screen`, `wisp-display`, `wisp-screen-idle`) run on events only. Removed four stale `.pyc` files that had been committed into the image overlay (`usr/bin/__pycache__`).
+- **The first-run download also installs the custom Proton tool (feature, MINOR):** `steam-install` (run by `wisp-setup` before every Steam session) now also fetches the pinned `Proton11-ARM64-A57-v80` (`steam/compat-tool.lock.json`, staged to `/usr/share/wispos/`; 405 MB `.tar.zst`, 1.9 GiB unpacked, sha256-pinned, resumable like the client) and unpacks it as a stream through tarfile's `data` filter (no absolute or `..` paths, no links out of the tree, no devices, nothing outside its own folder; a refused or failed unpack leaves nothing behind) into `steam/compatibilitytools.d/`. A device that has Steam but not the tool downloads only the tool; a new client version leaves the tool where it is (see the next entry); READY is still written last. Unpacking uses Python 3.14's `compression.zstd` (the zstd program only as a fallback on a host without it). A missing tool lock means no tool step. Tests: `os/test_steam_install.py` (21, incl. a hostile-archive matrix, resume, hash failure, tool-only and re-pin cases; the `data` filter was mutation-checked). Not yet run on a device.
+- **Game launches no longer compile the English locale in every container (fix, PATCH):** `wisp-steam-session` exports `PRESSURE_VESSEL_GENERATE_LOCALES=0`; measured on the handheld, launch to game window 195 s -> 129 s (`localedef` ran in both phases of a launch). Test: `test_pressure_vessel_does_not_compile_the_english_locale_at_every_container_start`.
+- **Steam UI watchdog (feature, MINOR; fixes a manual-recovery failure):** `wisp-steam-watch` (new service) restarts `wisp-steam` (never a reboot) when the Steam process has been up more than 7 minutes with its web helpers running and sway has had no `steam` window for 4 consecutive checks: the black-screen stall where Steam's window is mapped in Xwayland but never presented (seen on 3 of 4 starts on 2026-10-09). At most 3 restarts per 30 minutes; a running game does not trigger it (Steam's window stays in sway's tree); `/run/wisp-steam-watch-off` disables it for development. Test: `test_a_black_screen_stall_restarts_the_steam_session_but_a_slow_start_or_a_running_game_does_not`.
+- **Pressure-vessel no longer regenerates the English locale at every container start (fix, PATCH):** `usr/config/locale/en_US.utf8 -> en_US.UTF-8` (the boot-time locale source) gives glibc and pressure-vessel the standard directory name; without it `pv-locale-gen` compiled the locale in the container (28-35 s on the A53, twice per Steam game launch). Test: `test_the_standard_spelling_of_the_english_locale_exists_so_pressure_vessel_does_not_regenerate_it`.
+- **Custom Proton tool instead of modifying Valve's (change, MINOR):** the default compatibility tool is `Proton11-ARM64-A57-v80` (community standalone ARMv8.0 build in `compatibilitytools.d`, which Steam never validates or updates) when installed, else `proton-stable`; `wisp-steam-seed` upgrades only its own earlier seed; `wisp-proton-patch` also patches custom-tool launchers. The tool is not in the image yet (first-run installer open). Reason: Steam re-validated and updated Valve's `Proton 11.0 (ARM64)` and undid the overlay (docs/WISPOS-NOTES.md, DESIGN FINDING).
+- **Steam can launch games (fix, PATCH):** `wisp-steam-session` puts a copy of the SIGILL fallback at `~/.steam/bin32/gameoverlayrenderer.so`, the path Steam lists in `LD_PRELOAD` after its overlay. Steam preloads `<fallback>:<overlay>`, the overlay's constructors use LSE atomics the Cortex-A53 lacks, and they ran before the fallback's handler existed, so every Steam-launched game died with SIGILL (exit -1, or a silent exit 0 inside the pressure-vessel container). Test: `test_games_launched_by_steam_get_the_fallback_ahead_of_the_overlay_in_every_process`; verified on the device by launching Worms Armageddon from the Steam UI.
+- **Steam defaults to the ARM64 Proton (change, PATCH):** `wisp-steam-seed` (new, run by `wisp-steam-session` before every Steam start, Steam not running) adds the global default compatibility tool `proton-stable` to `config.vdf` unless the user already has a default; without it Steam queued the x86 Proton Experimental + FEX + a second runtime (about 2.2 GB) that cannot run on this device (found installing Worms Armageddon, 2026-10-09). A missing `config.vdf` gets a minimal one. Test: `test_steam_defaults_to_the_arm64_proton_without_overriding_the_users_choice` (also checked against the device's real pre-seed config).
+- **zram is 2048 MiB with a 450 MiB RAM cap (change, PATCH; operator request "up the zram"):** was 768 MiB, which filled during an install with the Steam UI running (device logs, 2026-10-09).
+- **A real formatter for the TF2 card: Steam's "Format SD Card" and a mount for testing (feature, MINOR; operator request 2026-10-10 to format and use their 128 GB card):**
+  `/usr/lib/wispos/tf2-card` finds the card by the controller it hangs off (`4022000.mmc`, the second SD slot; the boot card is `4020000.mmc` and is never touched), partitions it GPT with one
+  ext4 partition (label default `TF2`, no root reserve; no `casefold` because this kernel has no `CONFIG_UNICODE`), and mounts it at `/storage/wispos/tf2`. It refuses: no card in the slot, a caller-named
+  device that is not that card, a card under 1 GiB, a partition of it mounted anywhere but its own mount point or `/run/media`, a bad label. `steamos-format-sdcard` and `steamos-format-device` (replacing the
+  placeholders) hand over to it with `steam-format`, which still logs every call to `/storage/wispos/logs/<name>.log` because Steam's real arguments are unknown; only `--label`/`--device` are used.
+  `steamos-trim-devices` stays a logging placeholder. Tests: `test_tf2_card_formats_only_the_card_in_the_tf2_slot_and_refuses_everything_else`, `test_steam_format_helpers_log_the_call_and_run_the_same_tf2_only_formatter`
+  (fake sysfs and fake tools, run under dash and BusyBox sh; red when the target is pointed at the boot controller). It also unmounts ROCKNIX's automount of an external card (`/storage/games-external`, the bind over `/storage/roms`). Run once on a real 128 GB card on the device (53 s, ext4, mounted, 14.5 MB/s write).
+- **The TF2 card is mounted by our own udev rule, ROCKNIX's games-card automount is pruned (change, MINOR):** `98-wisp-tf2.rules` starts `wisp-tf2-mount.service` when the first partition of the card on controller `4022000.mmc` appears with an ext4 filesystem, and `wisp-tf2-umount.service` when it goes (a pulled card is released lazily; a present card must unmount cleanly). `usr/lib/udev/rules.d/99-automount.rules` is in `rootfs-prune.txt`: it mounted any external card of 8 GB or more at `/storage/games-external` and bound it over `/storage/roms`. Test: `test_the_tf2_card_is_mounted_by_our_udev_rule_and_not_by_rocknixs_automount` (rule and tool name the same controller) and `test_tf2_card_unmount_is_clean_while_the_card_is_there_and_lazy_after_it_was_pulled`. Checked on the device with volatile copies (`udevadm test` for add, remove and the boot card; a real add event mounted the card at `/storage/wispos/tf2` and ROCKNIX's automount did not run). Not in an image yet; not checked across a reboot.
+- **The screen turns off when idle (feature, MINOR; operator request):** `wisp-screen-idle` (new service) blanks the panel and its backlight after 120 s without a button press (change it live in `/storage/wispos/config/screen-timeout`, 0 = never)
+  and wakes it on the next press; `wisp-screen wake|on|off|status|inhibit` lets scripts wake it (screenshots cannot be taken while it is off) and keeps it on during the first-run setup. Power off is sway's `output DSI-1 power off`
+  (measured: backlight `bl_power` 4, DPMS Off, and it comes back cleanly). Test: `test_the_screen_blanks_when_idle_and_wakes_on_a_button_press`. Not yet run from an image; a button press that wakes the screen is also delivered to the app.
+- **First-run setup screens run at the full 720x480 (fix, PATCH; found on the handheld):** with half resolution as the default the Wi-Fi and Steam-download screens (a WispOS app) were soft and
+  barely legible, because they draw at the size sway gives them and sway upscaled a 360x240 picture; a better interpolation filter cannot recover detail that was never drawn (nearest is jagged, linear is blurry,
+  native is crisp: compared on the device). `wisp-setup.service` now runs `wisp-display native` before the screens and `wisp-display default` (the scale in `config.kiosk`) before the Steam session starts.
+  Test: `test_setup_screens_run_at_native_resolution_and_the_default_display_is_restored_before_steam_starts`. Steam's own UI is still drawn at half resolution (legibility there unjudged).
+- **Half resolution is the default display (change, MINOR; operator decision):** the image's sway base config sets `output DSI-1 scale 2` and `scale_filter linear`, so Steam's UI and games run on a 360x240 screen
+  scaled 2x to the 720x480 panel (measured: feels more responsive; the GPU stays at its lowest clock while the UI animates; CPU unchanged). Native 720x480 is meant to stay selectable from Steam's display options
+  through the gamescope stand-in (not built yet). Test: `test_the_default_display_is_half_resolution_with_linear_scaling`.
+- **Dev images carry the flight recorder, memory watchdog, pad-triggered panel test and the diagnostic tools (change, MINOR for dev builds; release unchanged):** `wisp-dev-blackbox`, `wisp-dev-watchdog` and
+  `wisp-dev-paneltest` (hold SELECT+START 3 s) are systemd services in `os/rootfs-dev`, the tools of `os/dev/diag` are staged under `/usr/lib/wispos-dev` (linked to `/storage/wispos/dev` by tmpfiles.d on a card
+  that has none), and `check_rootfs` / `dev-test.sh` refuse any of them in a release image. Tests: `test_dev_images_carry_the_recorder_watchdog_panel_test_and_diagnostic_tools`,
+  `test_nothing_of_the_dev_tools_is_in_the_release_overlay`. Not yet built into an image or run on hardware from a fresh flash.
+- **Games default to WineD3D with Wine debug logging off (change, PATCH):** `wisp-steam-session` exports `PROTON_USE_WINED3D=1 WINEDEBUG=-all` before starting Steam, so every game inherits them
+  (per-game launch options still override). The GPU has no Vulkan driver (DXVK cannot start), and Wine tracing made BIT.TRIP RUNNER's load take many minutes instead of about 2.
+  Regression test: `test_games_run_with_wined3d_and_wine_debug_logging_off_by_default`. Not yet run on an image (not rebuilt; the dev card's launcher copy lacks it).
+- **Fix: games ran as small floating windows with a title bar (fix, PATCH; found on the handheld):** without gamescope nothing made a game fullscreen, so
+  BIT.TRIP RUNNER (X11 class `steam_app_63710`) was a floating 720x405 window under a 25 px title bar on the 720x480 panel. The image's sway base config
+  (`usr/share/sway/config.kiosk`, which ROCKNIX's `111-sway-init` copies over the user config on every boot) now has
+  `for_window [class="^steam_app_.*"] border none, fullscreen enable`; verified live on the handheld (the window became 720x480, no border). Regression test:
+  `test_games_start_fullscreen_without_a_title_bar`. Not yet verified on a rebuilt image (the image was not rebuilt).
+- **Fix: Steam's UI stalled or stayed black on about half of the quick (re)starts (fix, PATCH; found on the handheld):** the Steam UI's window never
+  reached the screen, or the UI spent minutes in a synchronous React render (its renderer pinned at 100% CPU inside the focus handlers), when Steam started
+  within about 10 s of the previous Steam: it then reused the previous Steam's leftover Xwayland (which only exits by itself after ~10 s without clients).
+  `wisp-steam-session` now ends the old Xwayland and waits for it to go before every Steam start (`fresh_xwayland`; sway respawns it on demand), including
+  Steam's own restarts and the start right after first-run setup. Measured on the handheld, same 4 s stop-to-start gap: without the change 16/32, 20/40 and 4/8 starts stalled
+  or stayed black in three series; with the change **16 of 16 came up** (and 7 of 8 when only Xwayland was restarted by hand); starts delayed by 13-25 s, where Xwayland had exited by itself, came up 23 of 24.
+  Regression test `test_steam_always_starts_on_a_fresh_xwayland` (red first; it overrides the kill/pidof/sleep builtins so it can never signal a real process).
+
+- **Fix: Wi-Fi was switched off about 18 s into every boot after first-run setup (fix, PATCH; found on the handheld):** ROCKNIX's
+  autostart `080-network` disables Wi-Fi whenever the setting `wifi.enabled` is 0, and ROCKNIX's default `system.cfg` says 0. NetworkManager
+  joined the network at ~14 s, the script then deauthenticated the radio and set the rfkill soft block (`wlan0: unavailable`), and
+  systemd-rfkill saved that block for the next boot. It stayed hidden because the first-run screen re-enabled the radio; once Steam was
+  installed `wisp-setup` exits at once, so every reboot left the device off the network. WispOS has no airplane mode, so it now ships its own
+  `080-network` that only runs `rfkill unblock wifi`, which also clears a block saved by an older image. Regression test
+  `test_wifi_is_never_switched_off_at_boot` (red before the fix) runs the script with fake `rfkill`/`wifictl`/`nmcli`.
+
+- **Fix: P1-only BOOT refresh without host privileges (PATCH):** `tools/splice-p1.sh` now builds a regular-file FAT32 volume with the existing FAT writer, checks its filesystem and payload readback, validates the target MBR and HDD paths, and writes only the 16..272 MiB P1 interval. Protected partitions are not regenerated.
+
+- **Dev tool: a virtual gamepad for driving the UI over SSH (feature, MINOR, dev builds only):** `wisp-dev-pad` (in `rootfs-dev/`, so
+  never in a release; `check_rootfs.py` fails a release that has it) creates a uinput gamepad and presses buttons on request. With
+  `--clone NAME` it copies the identity and button set of the real pad and takes the meaning of button names from that pad's SDL
+  controller-database entry, so Steam and SDL treat it like the real one; without it, a generic pad. It never types text. Together with
+  `grim` screenshots this lets a developer or agent navigate the device unattended. Tested: parsing logic (`os/test_dev.py`), and in the
+  emulator the real `wisp-setup` driven through SDL by the virtual pad (`os/setup/flow-test.sh`, 20 scenarios).
+
+- **Fix: every D-pad press moved two rows on pads SDL treats as controllers (fix, PATCH):** `wisp-setup` handled a press both as a
+  controller event and as the raw joystick hat/button event of the same device; the old guard checked only device index 0. Joystick
+  events are now read only for devices not opened as controllers. Found with the virtual pad (one `down` selected the third row), red
+  before the fix. `WISP_DEBUG_INPUT=1` prints each input device and the source of each press.
+
+- **Fix: the updated Steam client could not load its UI (fix, PATCH; found on the handheld):** Steam updates itself on its first
+  start, and the updated `steamui.so` needs `libva` ("Fatal error: Failed to load steamui.so", Steam exited 255 in a loop). Scanning the
+  updated client on the device showed five libraries the rootfs lacks (`libva`, `libvdpau`, `libssh2`, `libbrotli*`, `libasyncns`) in
+  addition to `libibus`; my earlier host-side scan used the older seed and missed them. All six pinned packages are now baked into
+  `/usr/lib/wispos/lib` (`stage_rootfs.STEAM_LIB_PACKAGES`), required by the boot contract, and the closure check lets libraries in that
+  directory resolve each other (and nothing else). With them in place on the device Steam reached its sign-in page and the account was
+  signed in. Release image `a6445cee57f6d0cabe3e7ec922f38b726526c48faa0db4fcd1640d11931aecc2`.
+
+- **Fixes from the first full run on the handheld (fix, PATCH):** (1) After setup finished, Steam did not start: `wisp-steam` is
+  ordered after `wisp-setup`, was evaluated while setup was failing and restarting, skipped for want of `READY`, and never retried;
+  `wisp-setup` now starts it itself when it succeeds. (2) On the first start after a flash sway crashed (status 139) until systemd
+  restarted it: `sway.service` starts before ROCKNIX's autostart writes the sway config, and ROCKNIX ships no default for sway's
+  own start helper to copy; a default (the kiosk config) is now staged. (3) The boot report on the FAT partition now includes
+  sway's and the setup unit's journal and the installer state. Seen on hardware: setup flow end to end, Steam downloaded
+  in 3m52s, then Steam updated itself to 1791249696 (667 MB) and restarted; memory stayed above 230 MB.
+
+- **First-run Steam download (feature, MINOR; the installer ran for real on the handheld, the on-screen flow has not yet):**
+  `wisp-setup` now carries the person from Wi-Fi to an installed Steam client. After the connection check it runs
+  `/usr/lib/wispos/steam-install`, shows its progress (percent, MB, then "Unpacking Steam"), and moves on only when the
+  installer said `done`, exited 0 and `READY` exists; a failed download has its own screen (Try again resumes, Choose another
+  network). If Steam is installed it exits at once; if the device is already online it goes straight to the download. The
+  installer downloads the 17 pinned components with resume (HTTP Range) and a sha256 check each, extracts with the build
+  tooling's safe extractor (one copy, `native_client.py`), re-applies the `steamwebhelper.sh` affinity patch (exactly once or it
+  fails), and writes `READY` last. `libibus-1.0.so.5`, the single library Steam's web helper needs that the rootfs lacks
+  (readelf over `steamrtarm64/`; the other 29 packages of the old lock were for the ROCKNIX root), is baked into the image from its
+  pinned package; the session puts `/usr/lib/wispos/lib` on `LD_LIBRARY_PATH`. The setup unit waits for the Wayland socket
+  instead of failing once and restarting. Real run on the handheld: 360 MB over Wi-Fi at about 6 MB/s, 17/17 hashes, 932 MB
+  unpacked, patch applied, READY written. Tests: `os/test_steam_install.py` (10, against a local Range server: resume, ignored
+  Range, corrupt file, wrong architecture, double patch, low space, idempotence), `os/setup/flow-test.sh` (18 scenarios),
+  `nm.h` protocol tests. Release image `e6b8130b72c24c956b34c5fadbed01f3859773967f6729cbb1ab7b3469967d3d`.
+
+- **Fix: the install no longer depends on Steam's moving manifest (fix, PATCH):** the lock pinned the hash of Valve's manifest
+  URL, which always serves the current release; it changed within a week (1790904859 -> 1791249696), so every first-run install
+  would have failed. The components are content-addressed and individually pinned, and all 17 are still downloadable at the pinned
+  sizes, so the installer ignores the manifest. Regression test red before the change.
+
+- **Fix: the first-boot resize no longer corrupts STORAGE on a real card (fix, PATCH; found on the handheld):** the 32 MiB
+  STORAGE volume was made with mke2fs's default growth reservation (3 reserved GDT blocks, ~25 GiB), but a 58 GB card needs
+  ~1800x. `resize2fs` failed with "Illegal doubly indirect block", and the next boot's fsck stopped with "Filesystem corruption
+  has been detected!". `os/build-image.sh` now reserves room for 2 TiB (`-E resize=536870912`). `verify_image.py` gained the
+  regression check (replays e2fsck, resize2fs and tune2fs on a sparse copy at 58 GiB and 2 TiB; red against the old image,
+  28/28 now). The VM replay on a card-sized disk now reaches the second boot with a clean fsck. Release image
+  `98aa179c7d655b90e765d9375d3b17b0bba736c3a389a620ab56dfa382f00d68`.
+
+- **Development builds can be reached for diagnosis (feature, MINOR, dev tooling only; release unchanged):** `WISP_DEV=1`
+  builds a separate dev SYSTEM (`out/variants/SYSTEM-dev`, own work tree) and a `...-dev.img` that carries the builder's
+  public SSH key, optionally Wi-Fi, an announce target (`wispos/dev.conf`) and `wisp-dev-announce`, which posts the
+  device's hostname, address, MAC, kernel, state and failed units to the developer's machine once online. `os/dev/listen.py`
+  receives them (loopback/RFC 1918/ULA sources only, 4 KiB cap, known fields only) and prints the `ssh` command. The setup
+  screen shows a red DEV BUILD label. Build scripts refuse keys, credentials or an announce target without `WISP_DEV=1`;
+  `check_rootfs.py` and `verify_image.py` fail a release that contains any of it. Tests: `os/test_dev.py`, `os/dev-test.sh`
+  (boots a dev image in the VM, announces, key login); `qemu-test.sh` now pins the release SYSTEM. Release image rebuilt
+  (sha256 `e0e796499cc7a1f9d67e024f23ab8d919276227c158cf2c9cc7559f603b9084c`): verify 26/26, qemu-test 19/19.
+
+- **WispOS mark (design, docs only):** `docs/brand/` holds the logo and its generator. A white orb cradled by a thick
+  half-ring cut into three arcs and two gaps of equal length, like a dotted line (hazy, wisp-like), in the proportions
+  of a badge. Colour, one-colour and transparent SVGs; `python3 -I docs/brand/build_mark.py` regenerates them. The
+  concept is the operator's; it shares the Steam Deck mark's general structure (orb plus concentric half-ring) but not
+  its shapes, and no Valve artwork is in the repository.
+
+- **WispOS card image built from source, boots to SSH in emulation (feature, MINOR; not yet on
+  the handheld):** `os/boot/build-kernel.sh` builds Linux 7.2 from ROCKNIX's recipe (41 patches in
+  their order, H700 device trees and config, built-in Wi-Fi/Bluetooth/panel firmware, the
+  joypad driver); compared with ROCKNIX's reference build it gives 19/19 byte-identical device
+  trees, the same 52 modules, the identical embedded initramfs, and a config that differs only
+  in compiler-derived symbols (GCC 13.3 here, 15.2 there). `os/build-rootfs.sh` prunes ROCKNIX's
+  userland to the single purpose (SYSTEM 1.24 GB -> 177 MB) and `os/check_rootfs.py` proves
+  nothing left behind needs something removed; `os/build-image.sh` assembles MBR, our U-Boot at
+  byte 8192, FAT boot partition (filled by `os/fatwrite.py`, no root or mtools needed) and ext4
+  storage; `os/verify_image.py` runs 25 offline checks. Two builds of rootfs and image are
+  byte-identical. `os/qemu-test.sh` boots the image headless in QEMU (generic arm64 machine,
+  test-only virtio kernel): initramfs, first-boot resize, systemd to `wispos.target`, DHCP, SSH
+  as `wisp` (password) and root (key), boot report on the FAT partition. That is the userspace
+  flow only; the H700 hardware paths are untested. Accounts: `wisp`/`wisp` (operator's choice),
+  root key-only (`*` in shadow, because `!` makes sshd refuse key logins). Settings can be left
+  on the FAT partition (`wispos/wifi.conf`, `wispos/authorized_keys`) and are applied at boot; the image ships with no keys or credentials.
+  ROCKNIX's hardware autostart (brightness, audio routing, controller mapping, sleep mode,
+  sway config, H700 quirks) is kept; its emulator steps, daemon manager and telemetry reporter
+  are removed. The SIGILL fallback is built from `steam/lse-ldadd.c` at image build (it reproduces the
+  documented final build, sha `1f24e058...`, and the build fails if it contains any LSE instruction)
+  and ships in `/usr/lib/wispos`; `os/push-steam-runtime.sh` installs the Steam runtime over SSH.
+
+- **First-run Wi-Fi screen (feature, MINOR; not on the handheld yet):** `os/setup/wisp-setup` forces a connection before Steam
+  can be downloaded, in Steam's own design language (palette, focus style, keyboard theme read from its stylesheets). Continuous scan,
+  gamepad-driven list and on-screen keyboard, hidden networks, wrong-password and no-internet handling, and an internet check that
+  requires Steam's manifest (so a captive portal cannot pass). Built into the image from hash-pinned SDL headers, ordered before the
+  Steam session. 13 flow tests run the real binary against a fake `nmcli` in the emulated VM; the parsing is unit-tested natively.
+
+### Changed
+
+- **Own bootloader built from ROCKNIX's recipe (feature, unbooted):** `os/boot/build-uboot.sh`
+  builds U-Boot v2026.01 and Arm Trusted Firmware 2.15.0 from the H700 DDR3 recipe at ROCKNIX
+  commit `c445081a`, every source hash-checked, using only tools already on the host (swig is
+  compiled into a private prefix; a compile flag works around SWIG 4.5 dropping Python 2 names
+  in U-Boot's host helper). Two clean builds are byte-identical (`d08a5b03...`). It matches the
+  booting bootloader structurally (SPL header and 40,960-byte size, version, board strings; 17%
+  of bytes, because the compiler differs). Not yet booted. Direction recorded: WispOS is its
+  own OS, with no overlay and no ROCKNIX fallback frontend.
+
+- **Single-purpose OS: design (feature, unrun on hardware):**
+  `docs/WISPOS-OS-DESIGN.md` records requirements, decisions and evidence (keep the
+  ROCKNIX boot chain and kernel; keep systemd, measured at about 13 MB; gamescope
+  deferred because the device has no Vulkan driver and PanVK is experimental on this
+  GPU; SteamOS integration points found in Steam's binaries). The first cut of `os/` was a
+  reversible overlay with a fallback frontend; the operator rejected that on 2026-10-07 and it
+  was replaced by the from-source image above (amended openly: no overlay, no fallback frontend).
+
+- **Overnight A/B of Steam trims and a failed zram test (documentation):** a clean
+  series (fresh launch, `/dev/shm` cleared, single runs) found no benefit from
+  `-cef-disable-gpu`, `-cef-disable-site-isolation` or `MALLOC_ARENA_MAX=2`, found
+  a shared-memory leak after hard kills (355 MB of `/dev/shm/u0-Shm_*`), and the
+  load test for zram sizing locked the handheld up; no zram results. See
+  `docs/OVERNIGHT-REPORT-20261006.md`.
+
+- **Measured the memory cost of the retained ROCKNIX stack (documentation, no
+  runtime change):** with Steam signed in and idle, stopping EmulationStation,
+  avahi, rpcbind, the touch keyboard and the debug shell at runtime released
+  about 100 MB (non-Steam processes 209 -> 109 MB, zram RAM 238 -> 175 MB,
+  `MemAvailable` about 205 -> 304 MB, pressure stalls gone); Steam stayed at about
+  790 MB. See `docs/STRIPPED-OS-MEMORY-BASELINE.md`.
+
+- **Milestone: native Steam reaches the Big Picture sign-in page on the RG34XXSP
+  (experimental, 2026-10-06):** with the SIGILL fallback (instruction emulation,
+  handler ownership, never-blocked SIGILL), the five libraries and the SwiftShader
+  launcher, `steam -gamepadui` started from SSH shows the sign-in screen (QR code,
+  account and password fields) about 175 s after launch, captured with `grim`
+  over SSH (`handheld-shots-20261006/run2-08.png`), then "Logging in..." with no
+  input from the tooling. Steam's own logs show `User.StartLogin` and
+  `SetLoginState: WaitingForCredentials`. The earlier "Unable to initialize
+  Vulkan" message comes from the `vulkandriverquery` probe helper (it hard-codes
+  `VK_KHR_xlib_surface`, which Steam's SwiftShader lacks) and did not prevent the
+  UI. At the sign-in page `MemAvailable` was 264 MB with 578 MB of zram swap used
+  (about 2.7:1), about one million emulated SIGILLs so far, no OOM and no
+  unsupported-instruction log line. Whether `VK_ICD_FILENAMES` is needed for the
+  UI was not tested; Steam's runtime-launcher service and `lspci` are missing
+  (non-fatal). Sign-in, controller navigation, memory over time and emulation
+  cost are unmeasured.
+
+- **Launcher: software Vulkan driver and `steamui.so` check (patch, experimental):**
+  Steam reported `Unable to initialize Vulkan` / `failed create vulkan instance:
+  -9` on the handheld (no usable Vulkan driver). Running real Steam under QEMU
+  with `VK_ICD_FILENAMES` pointing at the SwiftShader driver in Steam's own
+  runtime makes its GPU query succeed (`SwiftShader Device (LLVM 10.0.0)`). The
+  launcher now exports it, and its startup-library check also covers
+  `steamui.so` (the earlier check missed `libva`). SwiftShader is CPU-rendered:
+  speed and memory use on the 1 GiB handheld are unmeasured. New test-only
+  tooling for emulated runs: `steam/qemu-exec-shim.c` (stands in for
+  `binfmt_misc` in user space) and `steam/qemu-sigill-shim.c`.
+
+- **Never let a thread block SIGILL (patch, experimental):** with the libraries
+  fixed, Steam ran about 100 s per launch (boot `9b8decea`, three launches),
+  emulating about 500,000 LSE faults each, then died with SIGILL (exit 132) and
+  zero `unsupported instruction` log lines. The kernel log names the first thread
+  to dump core: `threaded-ml` (libpulse's mainloop thread, which blocks every
+  signal), then `steam` and `CFileWriterThre` in the other launches. A
+  synchronous SIGILL in a thread with SIGILL blocked forces the default action
+  and kills the process, so the fallback is never invoked. The preload now
+  interposes `pthread_sigmask` and `sigprocmask` to never block SIGILL and
+  strips SIGILL from other handlers' `sa_mask`. Regression tests in
+  `lse-qemu-chain-test.c` (thread that blocks all signals, `sigprocmask`,
+  handler `sa_mask`) fail against the previous preload and pass now; a
+  standalone reproduction confirmed QEMU applies the kernel's rule. Not yet
+  verified on the handheld. Steam also reports no Vulkan (`failed create vulkan
+  instance: -9`, `BInit - Unable to initialize Vulkan!`), a separate gate.
+
+- **Supply the shared libraries Steam's updated `steamui.so` needs (patch, experimental):**
+  the third handheld run (boot `3413c7da`) got past breakpad, downloaded and
+  installed Steam's own client update (2m43s download, ~5 min extraction), then
+  failed with `libva.so.2: cannot open shared object file`. The launcher's loader
+  check only covered `steam` and `steamwebhelper`, not `steamui.so`, which Steam
+  `dlmopen`s after the update. Resolving all 99 updated ELF files against the
+  ROCKNIX libraries found five missing sonames (libva, libvdpau, libbrotlidec,
+  libssh2, libasyncns). Pinned and extracted, not installed, from Ubuntu 24.04
+  arm64 packages (sha256-verified) into `runtime/lib`: libva2, libvdpau1,
+  libbrotli1, libssh2-1t64, libasyncns0; added to `native-libs.lock.json` and
+  `INITIAL`. Verified under QEMU (device libc 2.41): a `dlmopen` of the updated
+  `steamui.so` reproduced the exact error before and succeeds after; `ld.so
+  --list` shows zero unresolved libraries for all 99 files. Link-time
+  dependencies only: libraries Steam loads by name later may still be missing.
+  Not verified on the handheld.
+
+- **Keep the SIGILL fallback installed against Steam's breakpad (patch, experimental):**
+  the second handheld run (boot `43f7a6c5`) emulated 636 LSE faults, then Steam's
+  breakpad took over SIGILL, reported `Failed writing minidump`, installed the
+  default action and Steam died (exit 132); no unsupported instruction was
+  captured (the recorder's 32 slots filled with emulated ones). The preload now
+  exports `sigaction`/`signal` interposers that record the program's SIGILL
+  handler as a chained handler, log unsupported instructions (word and PC),
+  and chain only faults it cannot emulate. Regression test
+  `steam/lse-qemu-chain-test.c` (red against the previous preload, green now);
+  real Steam under QEMU runs past the old failure point. Reverses the prior
+  no-interposition decision. Not yet verified on the handheld.
+
+- **Complete the LSE fallback for Steam's measured instruction set (minor, experimental):**
+  the physical CASPAL128 run verified both CASPAL markers on the handheld and
+  ended at a new `swpa w1, w1, [x0]` (Steam offset `0xe11b0`, exit 132). A
+  disassembly scan of all 86 ELF files in the unpacked Steam runtime found
+  25,099 LSE/RCpc sites: 25,063 are now emulated (LDADD any ordering, SWP, CAS,
+  halfword LDUMAX, LDAPUR/LDAPURH, plus the earlier LDADDAL/CASPAL). The other
+  36 are byte/halfword and other-operation forms in `libcef.so` and a few
+  libraries, in outlined-atomics helpers behind a runtime `ldrb/cbz` flag check
+  (inferred from one helper's disassembly; not executed on this CPU). New `steam/lse-atomics.h`; opcode macros in
+  `steam/lse-opcode.h`; host semantic tests (`test_lse_atomics.py`) and an ARM
+  execution test under QEMU user mode `-cpu cortex-a53` (`lse-qemu-test.c`,
+  `test_lse_qemu.py`) that runs Steam's real instruction words through the real
+  handler. The real Steam ELF under the same CPU model reproduces the handheld
+  failure with the old preload and runs past every LSE site with the new one.
+  Not verified on the handheld; QEMU rejects Steam's breakpad `clone()` so it
+  cannot show the full UI path. The recorder binary is unchanged.
+
+- **No-response card audit (documentation/maintenance, no runtime change):**
+  current card boot/platform/Steam payloads match their working hashes. Clear
+  FAT primary/backup dirty flags with all other BOOT bytes verified unchanged;
+  both offline filesystem checks pass. Physical power-on and the cause of the
+  no-LED report remain unverified.
+
+- **HDD storage preflight (patch, build tooling):** record the operator's HDD-only
+  requirement for image/download/build/cache/extraction/temporary files. Add a
+  read-only mount/path check that rejects root storage and escaping symlinks;
+  legacy tool defaults still require explicit inspection and HDD overrides.
+  Move 33 older image artifacts to HDD after full byte comparison, preserving
+  compatibility links and recovering 34.61 GiB of root allocation.
+
+- **Debugging workflow documentation (no runtime/SemVer change):** record the
+  verified LDADDAL checkpoint, installed CASPAL test, guarded capture/build/card
+  update procedure and subsequent UI, memory, appliance and game gates. Correct
+  stale plan wording that described the first native execution as still pending.
+
+- **Second measured native Steam LSE fallback (patch, experimental):** physical
+  logs verify the LDADDAL fallback ran and advanced Steam to CASPAL128 at
+  offset `0xe1290`. Extend only that measured paired compare-and-swap operation
+  using baseline ARMv8.0 exclusive atomics; retain unknown-instruction capture
+  and limit repeat deduplication to the two recognized operations. Full Steam
+  UI, CASPAL hardware execution and emulation performance remain pending.
+  Twenty-six host tests and strict ARM cross-build/assembly checks pass.
+  Card installation/readback and filesystem checks pass with preserved boot
+  and Steam hashes; CASPAL emulation still needs the next handheld run.
+
+- **Measured native Steam LSE fallback (patch, experimental):** physical
+  tracing identified SIGILL at LDADDAL in the pinned Steam executable.
+  Add a narrow ARMv8.0 signal fallback for aligned 32/64-bit LDADDAL, with
+  baseline exclusive atomics and Steam-only preload. Retain fault capture;
+  optional repeated-site deduplication preserves slots for another opcode.
+  Seventeen host tests pass; card installation/readback and a read-only
+  filesystem check pass. Steam and working boot platform hashes are preserved;
+  the next physical run verified LDADDAL emulation and identified CASPAL128.
+  Full UI and performance remain pending.
+
+- **Native Steam fault capture (patch, diagnostic tooling):** first physical
+  client test completed unpack, loader checks and zram setup, then exited132
+  without a visible window. Add a static ARMv8-A ptrace recorder for registers,
+  signal details, instruction bytes and mappings while preserving signal
+  delivery. Eight host fixtures pass; card recorder installation/readback and
+  filesystem checks completed. The next physical run validated ARM recording
+  and identified the native Steam LDADDAL fault. Full client UI remains pending.
+
+- **Working platform preservation (patch, test tooling):** pin and verify the
+  official DDR3/v2 firmware, kernel, SYSTEM, DTB, overlay and boot arguments,
+  allowing stock STORAGE expansion. Operator confirmed full frontend boot;
+  recovered live inventory records Linux 7.2, Sway/Panfrost and memory state.
+
+- **Panel failure research and capture (patch, diagnostic tooling):** record
+  failed original/v2 official display tests and existing ROCKNIX/Knulli fixes.
+  Add a bounded collector through ROCKNIX's supported custom service path,
+  preserving panel configuration while saving live IDs, DTB, DRM and logs.
+  Operator subsequently confirmed complete frontend boot on the retained
+  DDR3/v2 control; all bounded snapshots were recovered. Cause of the earlier
+  display failure remains unknown.
+
+- **Upstream boot control (patch, diagnostic tooling):** prepare a complete
+  official DDR3 image with only the RG34XXSP model DTB added. Verify all
+  original files and non-BOOT regions to establish a hardware baseline
+  before further WispOS kernel/init changes. Official control completed
+  first-boot storage setup on hardware with a garbled display; the official
+  v2 panel test also failed to display a readable image. WispOS boot remains pending.
+
+- **DDR3 DRAM supply correction (patch):** prior Linux DTBs declared the
+  inherited DDR4 1.1 V DRAM rail rather than the official DDR3 overlay's
+  1.2 V target.
+  Match the official ROCKNIX DDR3 overlay with 1.2 V minimum/maximum in both
+  RG34XXSP panel trees; reject mismatched DTBs at kernel-build staging.
+  The original DTB fails the new gate; both corrected source trees compile
+  and pass. Physical voltage and successful OS boot remain unverified.
+
+- **Embedded early boot (patch, experimental):** build the pinned kernel
+  with normal WispOS initramfs and explicit console; restore ROCKNIX-style
+  extlinux without external INITRD or unbounded empty-root wait. Fetch and
+  hash-check both required RG34XXSP panel programs, embedding them for early
+  display probing. Preserve SYSTEM/DATA and DDR3 prefix in offline assembly.
+  Early BOOT logging recognizes the embedded extlinux label as well as the
+  old trace script; its regression test fails against the preceding source.
+  Physical OS and panel-variant validation remain pending.
+
+- **ROCKNIX boot source audit (patch, documentation):** compare official
+  20261001 H700 boot/init code with our external-initrd test. Record embedded
+  initramfs, extlinux, console, root-layout and RG34XXSP panel differences;
+  define source-based checkpoints without claiming a diagnosed boot failure.
+
+- **Direct syscall init checkpoint (patch, experimental):** minimal shell
+  test retained green heartbeat. Add a static ARMv8-A diagnostic PID 1 that
+  mounts sysfs and sets green solid without libc or a shell. Hardware result
+  pending; no root cause claimed.
+
+- **Minimal init LED checkpoint (patch, experimental):** operator confirmed
+  kernel green heartbeat, but BOOT/DATA logs remain absent. Add a separate
+  diagnostic PID 1 that sets green solid through sysfs without storage or
+  USB dependencies. Physical userspace execution remains pending.
+
+- **Kernel LED diagnostic (patch, experimental):** fresh full-image test still
+  produced solid red then green, no USB and no BOOT/DATA logs; recovered BOOT
+  marker was `before-booti`. Add a diagnostic DTB with the green GPIO LED's
+  default heartbeat, independently of initramfs. Kernel handoff and BusyBox
+  packaging audits identified no concrete defect; operator confirmed green heartbeat on hardware.
+
+- **BOOT fallback logging (patch, experimental):** physical boot-trace test
+  reached `before-booti`; operator observed red pulsing then stopping, but
+  USB did not enumerate and DATA had no logs. Persist bounded init/kernel/
+  storage logs to verified BOOT before USB and independently of DATA; retain
+  mount errors and probe all MMC numbering in the fallback. Clear red on
+  successful init handoff while fatal maintenance remains solid. Root cause
+  and physical logging success remain pending.
+
+- **Early boot diagnostics (patch, experimental):** wait up to 30 storage
+  retries, persist DATA logs before requiring SYSTEM, retain USB maintenance
+  on storage failure, and signal early userspace with the red LED. A separate
+  test image forces USB peripheral mode and traces U-Boot loading stages on
+  BOOT. Physical boot remains pending; the earlier MMC race is a possible
+  failure path, not an established cause of the reported black screen.
+
+- **DDR3 hardware correction (patch):** operator reports green light with the
+  DDR3 native test image, versus no light with DDR4. Pin DDR3 as the required
+  bootloader in the hardware/source contracts and appliance assembly defaults.
+  Display, Linux and Steam startup remain pending.
+
+### Added
+
+- **Native Steam on the preserved platform (minor, experimental):** build an
+  offline bundle checked against all locked client components, remove the
+  inherited CEF CPU affinity restriction, and add a Ports launcher with
+  startup stage messages, loader checks, 768 MiB LZ4 zram and bounded memory
+  capture. Register the stock controller exit shortcut for the Steam session.
+  Use stock Sway/Xwayland and preserve the boot platform. Card installation
+  and added-file readback passed; core platform hashes matched before/after.
+  Device Steam execution and memory benefit remain unverified.
+
+- **OTG diagnostic image (minor, experimental):** built-in ACM/gadget console,
+  early initramfs ACM+ECM with bounded log replay and USB emergency shell,
+  authenticated serial login and independent key-only USB SSH. Offline SSH
+  runtime overlays and generated private provisioning stay out of git.
+  Diagnostic boot enables console output and extends Steam preparation to
+  900 seconds. Regular-file FAT/SYSTEM assembly verifies the preserved DDR3
+  bootloader, DTB and DATA. Physical enumeration and display remain pending.
+
+- **OTG debugging TODO (documentation only; no runtime SemVer change):**
+  record early initramfs USB serial/network logging, missing ACM support,
+  authenticated log retrieval and limits before USB initialization.
+
+- **First-boot UX TODO (documentation only; no runtime SemVer change):**
+  record progress/failure indicators, an early LED fallback, preparation
+  timeout investigation and pending display evidence in `TODO.md`.
+
+- **DDR3 boot experiment (minor, experimental):** alternate native Steam image
+  uses the hash-verified ROCKNIX 20261001 DDR3 bootloader region. The regular-file
+  assembler preserves MBR and every byte outside 8 KiB–16 MiB; the reported
+  DDR4-image no-light boot failure and unresolved hardware RAM type are recorded.
+
+- **Native ARM64 first-test tooling (minor, experimental):** pinned client
+  fetch/extraction, an offline rootfs overlay for Xorg/native Steam with
+  zram and bounded memory logging, a live H700 inventory collector, and
+  regular-file image assembly that verifies preservation outside SYSTEM/P2.
+  Physical boot and CPU/client compatibility remain unverified; production
+  FEX/Steam staging is unchanged.
+- **Native ARM64 experiment plan (documentation only; no runtime SemVer change):**
+  `docs/NATIVE-ARM64-PLAN.md` records physical inventory, native Steam testing,
+  zram measurements, appliance integration and ARMv8.0 Proton investigation,
+  with one test and a decision gate per step.
+- **FEX compatibility runtime (Layer D):** cross-compiled FEX
+  (`@ 50e6eee`, `BUILD_STEAM_SUPPORT=ON`) into aarch64 and installed into the
+  host root (`build/arm-root/usr/bin/`: `FEX`, `FEXServer`, `FEXServerManager`,
+  `FEXCompatTool`, `FEXGetConfig`, `FEXpidof`). CMake pinned to 3.27.7 in the
+  builder to avoid the Clang+C++20 scan-deps break (CMake #25956); `FMT_MODULE=OFF`.
+- **Host (arm64) native closure (Layer C):** installed into the host root —
+  `systemd` 255.4, `xserver-xorg-core` 21.1.12 (Xorg), Mesa 24.0.5 Panfrost
+  (`panfrost_dri.so` + 50 DRI drivers), `pipewire` 1.0.5, `wireplumber`, `iwd`
+  2.14, `bluez` 5.72, `dbus` — 252 packages. Plus `/etc/os-release`.
+- **Guest (x86_64) Steam root:** the amd64+i386 base (`guest-root`, 433 pkgs,
+  X11 client libs + Mesa) with the pinned Valve `steam-launcher` 1.0.0.87
+  (`steam_latest.deb`, sha256 `765aba9a…`) staged in and squashed to
+  `steam-x86_64.sqsh` (zstd, ~458 MB), nested into the host root at
+  `/usr/share/fex-emu/RootFS/`.
+- **Kernel (Layer B):** H700 `linux` tree (`@ df29080`, 4 KiB page gate) built
+  to `Image` + `sun50i-h700-anbernic-rg34xx-sp.dtb`; board DTS + 27 ROCKNIX
+  patches committed under `kernel/`.
+- **Initramfs:** minimal `init` that mounts the read-only SYSTEM squashfs
+  (probes `mmcblk0p2`), the writable DATA ext4 (`mmcblk0p3`), activates SWAP
+  (`mmcblk0p4`), bind-mounts the mutable-state dirs, and `switch_root`s into
+  systemd — no `root=` needed on the kernel command line.
+- **Real image assembly:** `image/assemble-image.sh` now writes a flashable
+  image — the hash-verified 16 MiB DDR4 bootloader prefix, a rewritten DOS/MBR
+  partition table (the H700 uses MBR, not GPT), and the four partitions via
+  loop devices: P1 BOOT (FAT32: Image, initramfs, DTB, extlinux.conf), P2
+  SYSTEM (SquashFS host root), P3 DATA (ext4), P4 SWAP. Card size is taken from
+  `image/partition.conf` (64 GiB) or overridden with `CARD_MIB`.
+- **Pinned sources:** `manifest/sources.lock` fully resolved (U-Boot SPL
+  2026.01, kernel, FEX, Steam, Mesa, systemd, PipeWire, host-closure versions);
+  `manifest/hardware.yaml` board details resolved from the decompiled known-good
+  DTB (AXP717, RTL8821CS WiFi/BT, H616 codec, USB port roles, panel).
+
+### Changed
+
+- **FEX payload refresh in the shipped image (patch):** the SYSTEM squashfs
+  inside `build/steam34-appliance.img` now carries the 2026-09-16 FEX install
+  tree (`build/fex-emu-20260916.tar.gz`, sha256 `7c517f18…`, interpreter
+  `FEX` = `ef5870e1…`, matching `build/ROOTFS-ARTIFACT.md`) in place of the
+  2026-09-07 build. Rebuilt as `build/SYSTEM.squashfs` (610021376 B, sha256
+  `e088577b…`, same zstd/128 KiB/`-all-root` geometry as its predecessor) and
+  spliced into P2 only; the image hash moves from `d5337b59…` to `c79f3b54…`.
+  The P2 payload gains 35 FEX files plus 12 directories (HostThunks and the
+  `usr/lib/aarch64-linux-gnu/fex-emu` hardlink set that Steam's
+  `ConfigTemplate.json` references); no path was removed and no other file's
+  bytes, mode or size changed. The nested guest
+  `steam-x86_64.sqsh` and all `usr/share/fex-emu` config files are preserved
+  byte-for-byte. Hardware boot remains unverified (see Notes).
+
+### Notes
+
+- **Status: a flashable test image is built and structurally verified; hardware
+  boot is pending.** The build pipeline (FEX, host closure, guest, kernel,
+  initramfs, assembly) has been executed end-to-end in this environment.
+  `image/assemble-image.sh` produces `build/steam34-appliance.img`, the full
+  64 GiB card-sized image (`CARD_MIB` default from `image/partition.conf`; the
+  file is sparse on the host so it needs only ~0.6 GiB of allocations).
+  Verified: bootloader prefix code + MBR signature preserved, the
+  four-partition table correct, and the SYSTEM squashfs carries the host
+  closure + nested guest squash.
+- **Not yet done (definition of done):** booting the image on the physical
+  RG34XXSP and confirming Steam Big Picture + one game launch. This is the
+  remaining gate before a release tag.
+- **Release not yet tagged:** per `AGENTS.md` a version requires manifest
+  version + annotated tag + changelog entry and a clean tree; the hardware
+  bring-up is outstanding, so this stays `[Unreleased]`.

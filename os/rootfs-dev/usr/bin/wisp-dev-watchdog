@@ -1,0 +1,15 @@
+#!/bin/sh
+# DEV BUILDS ONLY (wisp-dev-watchdog.service).
+# Dev safety net for the 1 GiB handheld, which thrashes instead of OOM-killing. Stops the Steam session when memory is nearly gone:
+#   - MemAvailable < 90 MiB AND swap free < 300 MiB, or
+#   - memory fully stalled (PSI "full" avg10) > 75,
+# for 3 checks in a row (6 s). Heavy stalls with plenty of swap left are slow, not fatal, and are allowed (the lock-up seen earlier had swap exhausted).
+# It prints its one line per stop to stdout (the journal; os/dev/log-stream.sh keeps it on the host) - nothing is written to the card.
+low=0
+while :; do
+    avail=$(awk "/MemAvailable/ {print int(\$2/1024)}" /proc/meminfo); sfree=$(awk "/SwapFree/ {print int(\$2/1024)}" /proc/meminfo)
+    full=$(awk "/^full/ {split(\$2,a,\"=\"); print int(a[2])}" /proc/pressure/memory)
+    if { [ "$avail" -lt 90 ] && [ "$sfree" -lt 300 ]; } || [ "$full" -gt 75 ]; then low=$((low + 1)); else low=0; fi
+    if [ "$low" -ge 3 ]; then echo "avail=${avail}MB swapfree=${sfree}MB psi_full=${full}: stopping wisp-steam"; systemctl stop wisp-steam; low=0; sleep 20; fi
+    sleep 2
+done

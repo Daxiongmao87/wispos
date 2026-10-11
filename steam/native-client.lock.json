@@ -1,0 +1,110 @@
+{
+  "schema": 1,
+  "version": "1790904859",
+  "manifest_url": "https://client-update.fastly.steamstatic.com/steam_client_publicbeta_linuxarm64",
+  "manifest_sha256": "f674354408b640eb6f26c757eecd3590832f942319527b6cd3ede8f67a9192a8",
+  "components": [
+    {
+      "name": "bins_hardware_all",
+      "url": "https://client-update.fastly.steamstatic.com/bins_hardware_all.zip.cbce77b1f8c263c26e2af78e68a1d81736432a8e",
+      "sha256": "c4c8cdcad2cc88fbf1514603cabf571c6fcaaf5b4f92899fcadc5a18959046c0",
+      "size": 362267
+    },
+    {
+      "name": "bins_linuxarm64_linuxarm64",
+      "url": "https://client-update.fastly.steamstatic.com/bins_linuxarm64_linuxarm64.zip.5350c2f61a366b30db0ac6283c805cb8c7f80f18",
+      "sha256": "e9e71a07f91dfcc223a246931e19cfc079ee2ace718a1afeb5d446e3801a8795",
+      "size": 110350652
+    },
+    {
+      "name": "bins_sdk_linuxarm64_linuxarm64",
+      "url": "https://client-update.fastly.steamstatic.com/bins_sdk_linuxarm64_linuxarm64.zip.a2eb31b24d613672c4d099621b7a8ec6d3a7684a",
+      "sha256": "5c70e40244e51c8a5bb9d224cc2cc2454a93a935d84dccb13921f9b1cc52e473",
+      "size": 15910023
+    },
+    {
+      "name": "codecs_linuxarm64_linuxarm64",
+      "url": "https://client-update.fastly.steamstatic.com/codecs_linuxarm64_linuxarm64.zip.b27e1d78cec034a8c73b0ff1bc6acbe3b8586344",
+      "sha256": "8e77a5e4605d7c7b576ce64abf39cfd342aea8d6783e17f2fb91e1c8f4357a0f",
+      "size": 11186125
+    },
+    {
+      "name": "public_all",
+      "url": "https://client-update.fastly.steamstatic.com/public_all.zip.10426d0860e311f024654d1f932d4434e6d55a92",
+      "sha256": "3cbb29584059934c95145400304319ca9a4a47d54a4978c6ecac1cfad2357847",
+      "size": 31197775
+    },
+    {
+      "name": "resource_linuxarm64_linuxarm64",
+      "url": "https://client-update.fastly.steamstatic.com/resource_linuxarm64_linuxarm64.zip.6e5691ac5a1a55a554250468a98c3f8e454fea4a",
+      "sha256": "f78280db38d95a74096a00f7d2bc3061286db135e9e61bbf963eb65de39d66fc",
+      "size": 2371
+    },
+    {
+      "name": "resources_all",
+      "url": "https://client-update.fastly.steamstatic.com/resources_all.zip.213fe769fd8484a0d149453c5655e70c1d13b086",
+      "sha256": "769840cdb2b22ad9798a1a3950de2fe82b8b5d3d37389dcc9b1393f77480d67b",
+      "size": 4301386
+    },
+    {
+      "name": "resources_hidpi_all",
+      "url": "https://client-update.fastly.steamstatic.com/resources_hidpi_all.zip.a110d78e994c028dc1c412951e87a0c4e9c819f7",
+      "sha256": "5bdb97ec734f035c1d06a59b62980028b1b05b920c544ae3673b1a515d3d507e",
+      "size": 98371
+    },
+    {
+      "name": "resources_misc_all",
+      "url": "https://client-update.fastly.steamstatic.com/resources_misc_all.zip.99ed79ed868d732d8e9e9a45444b8f003191e3dd",
+      "sha256": "187e562403c7544af7162e08baf7677d030ad6f60947c2cdc7dcbcbf0a7a7fe6",
+      "size": 4317962
+    },
+    {
+      "name": "sdl3_linuxarm64_linuxarm64",
+      "url": "https://client-update.fastly.steamstatic.com/sdl3_linuxarm64_linuxarm64.zip.9c0baff1041e8ff5ddec5a0d57d926ed724e5d08",
+      "sha256": "70d79de1149d52673928e92e9c923c2e1462d08ee596cc6603e96f926bf96ca4",
+      "size": 9307433
+    },
+    {
+      "name": "steamui_websrc_all",
+      "url": "https://client-update.fastly.steamstatic.com/steamui_websrc_all.zip.b8f1a35ee45c26f2a2cbfc4b4f37d8dccb149747",
+      "sha256": "e9fdcf01fccb221f85102cca72702edee9ac88cbd0822338080a829072771d0d",
+      "size": 35557964
+    },
+    {
+      "name": "steamui_websrc_movies_all",
+      "url": "https://client-update.fastly.steamstatic.com/steamui_websrc_movies_all.zip.40e78cdda48e9a8a74baf614e0cdc7a6b96d26d1",
+      "sha256": "885a32533327f0fd5ea98e6c6f13552e965cab4852dad7ce9ccf3d929d726b5b",
+      "size": 10900690
+    },
+    {
+      "name": "steamui_websrc_sounds_all",
+      "url": "https://client-update.fastly.steamstatic.com/steamui_websrc_sounds_all.zip.74727ca40ef88c5012bb631488fd285418dce825",
+      "sha256": "c823bd39d234e7d9a5fdb5ec6605eae3f175e52bb847725e8826ff526a61641c",
+      "size": 4676203
+    },
+    {
+      "name": "strings_all",
+      "url": "https://client-update.fastly.steamstatic.com/strings_all.zip.ad0779a3a2612ae06fe66604b121245d3905fd12",
+      "sha256": "5a5370f3b16675cc39d928d8557ff42f4f6caa427ea4d6bc7f98ee31d8ef9513",
+      "size": 4014754
+    },
+    {
+      "name": "strings_en_all",
+      "url": "https://client-update.fastly.steamstatic.com/strings_en_all.zip.e716a67d7fa91ba70490a6417e25d45c5435e393",
+      "sha256": "0c56193fac4fa518eaaac0dc66ecd21a3cee510ece85594b6c308f8d31ee98a3",
+      "size": 114150
+    },
+    {
+      "name": "tenfoot_images_all",
+      "url": "https://client-update.fastly.steamstatic.com/tenfoot_images_all.zip.86419c7a56c12dd107b5e0d46f50c8a9b121f3cc",
+      "sha256": "990676bc29d01736477c6b571b5048258a6156284ef242503112fc68567cbf01",
+      "size": 6582204
+    },
+    {
+      "name": "webkit_linuxarm64_linuxarm64",
+      "url": "https://client-update.fastly.steamstatic.com/webkit_linuxarm64_linuxarm64.zip.c1d5fa58a564375f71b34bccaa51c19be1143137",
+      "sha256": "b8687e0f20668d24055d8f2e9f6c4fbcbe84fbb99a7bc9de4595530be7029990",
+      "size": 111396433
+    }
+  ]
+}

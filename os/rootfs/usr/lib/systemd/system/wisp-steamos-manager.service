@@ -1,0 +1,9 @@
+# The OS-update half of the SteamOS contract (docs/WISPOS-STEAMOS-CONTRACT.md): com.steampowered.Atomupd1 on the SYSTEM bus. Not enabled in any target: the bus starts it when Steam
+# first calls it (usr/share/dbus-1/system-services/com.steampowered.Atomupd1.service names this unit). The SteamOSManager1 half runs in Steam's own session, started by the
+# SESSION bus (usr/share/dbus-1/services/com.steampowered.SteamOSManager1.service), because that is where Steam asks for it.
+[Unit]
+Description=WispOS update interface for the Steam UI (Atomupd1)
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/wisp-steamos-manager --atomupd system

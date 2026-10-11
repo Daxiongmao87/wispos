@@ -1,0 +1,216 @@
+{
+  "schema": 1,
+  "purpose": "native Steam startup data-only overlays; not dpkg installed",
+  "packages": [
+    {
+      "package": "libxcomposite1",
+      "version": "1:0.4.5-1build3",
+      "architecture": "arm64",
+      "sha256": "94f0d6d602d00e9ac53d307509897672f1132c875e2576a06fd9f3dcd00dd81e",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcomposite/libxcomposite1_0.4.5-1build3_arm64.deb"
+    },
+    {
+      "package": "libxdamage1",
+      "version": "1:1.1.6-1build1",
+      "architecture": "arm64",
+      "sha256": "6f54865fd13492e6bd9045e18c48270cd6c422c447c5531a17358a26748e5d50",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxdamage/libxdamage1_1.1.6-1build1_arm64.deb"
+    },
+    {
+      "package": "libxtst6",
+      "version": "2:1.2.3-1.1build1",
+      "architecture": "arm64",
+      "sha256": "0eb4b6a4f8ba8c3b19674063f60b9a8545952c68155d1d32c84abe427acaafc1",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxtst/libxtst6_1.2.3-1.1build1_arm64.deb"
+    },
+    {
+      "package": "libatk1.0-0t64",
+      "version": "2.52.0-1build1",
+      "architecture": "arm64",
+      "sha256": "8939633b3912c6476f3f501c2e8aa0fcc681dbd343b0a8138bf0ed5af8e9a77a",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/a/at-spi2-core/libatk1.0-0t64_2.52.0-1build1_arm64.deb"
+    },
+    {
+      "package": "libatk-bridge2.0-0t64",
+      "version": "2.52.0-1build1",
+      "architecture": "arm64",
+      "sha256": "7a2ce532caa857c4d7d8bced0a8143d1c7cf8a3093f8da926e025252ef70117f",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/a/at-spi2-core/libatk-bridge2.0-0t64_2.52.0-1build1_arm64.deb"
+    },
+    {
+      "package": "libatspi2.0-0t64",
+      "version": "2.52.0-1build1",
+      "architecture": "arm64",
+      "sha256": "c65f137507a665c969f9d158c8f63188b308037e66b48bca85ea2e7cf31bb84e",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/a/at-spi2-core/libatspi2.0-0t64_2.52.0-1build1_arm64.deb"
+    },
+    {
+      "package": "libcairo2",
+      "version": "1.18.0-3build1",
+      "architecture": "arm64",
+      "sha256": "d7820deae45510a3ca1c1f6e32baa2e8b12a234a410d185e42e75e9dd5fcd6da",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/c/cairo/libcairo2_1.18.0-3build1_arm64.deb"
+    },
+    {
+      "package": "libcups2t64",
+      "version": "2.4.7-1.2ubuntu7",
+      "architecture": "arm64",
+      "sha256": "7b7261315f6d384d1f342dd4686d76d7c748a83f4895ceff9c8a28ccb622e95e",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/c/cups/libcups2t64_2.4.7-1.2ubuntu7_arm64.deb"
+    },
+    {
+      "package": "libibus-1.0-5",
+      "version": "1.5.29-2",
+      "architecture": "arm64",
+      "sha256": "72992fcf5fa6c4185146818cccc779b499f6dab0db2f666e12fa9a3ae77c643a",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/i/ibus/libibus-1.0-5_1.5.29-2_arm64.deb"
+    },
+    {
+      "package": "libnm0",
+      "version": "1.46.0-1ubuntu2",
+      "architecture": "arm64",
+      "sha256": "9646e0cc884bf86d8d93d17585aeda9fcf4431984ee93ba417781e5ff5de3ea1",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/n/network-manager/libnm0_1.46.0-1ubuntu2_arm64.deb"
+    },
+    {
+      "package": "libnspr4",
+      "version": "2:4.35-1.1build1",
+      "architecture": "arm64",
+      "sha256": "0bd5994126c41aa05aa380954a3cb2ae56a0a8ebe368a0e01a411fdcc0cb9c68",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/n/nspr/libnspr4_4.35-1.1build1_arm64.deb"
+    },
+    {
+      "package": "libnss3",
+      "version": "2:3.98-1build1",
+      "architecture": "arm64",
+      "sha256": "8cf38786c8808bec1873758f71c8c634387677f16104ba4c5ce2485746c4ac96",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/n/nss/libnss3_3.98-1build1_arm64.deb"
+    },
+    {
+      "package": "libopenal1",
+      "version": "1:1.23.1-4build1",
+      "architecture": "arm64",
+      "sha256": "d718a9242ee0f8bcfd45c06d1b98348009b200fa03e82a8a334f4096a358e2af",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/universe/o/openal-soft/libopenal1_1.23.1-4build1_arm64.deb"
+    },
+    {
+      "package": "libpango-1.0-0",
+      "version": "1.52.1+ds-1build1",
+      "architecture": "arm64",
+      "sha256": "4964bc4c61df425e41a32108e58a493cf311a8366a9cb2522e8ca07e30a81eb4",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/p/pango1.0/libpango-1.0-0_1.52.1+ds-1build1_arm64.deb"
+    },
+    {
+      "package": "libxkbcommon0",
+      "version": "1.6.0-1build1",
+      "architecture": "arm64",
+      "sha256": "4ef68b9d56971a3119f40684f52a200be5c7c1bf8c5ef430a2d502e910bf8b61",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxkbcommon/libxkbcommon0_1.6.0-1build1_arm64.deb"
+    },
+    {
+      "package": "at-spi2-common",
+      "version": "2.52.0-1build1",
+      "architecture": "all",
+      "sha256": "7e05959b067031468f21ae46c6653a6813f1dccd994ef12a0b5f75de0ed346b6",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/a/at-spi2-core/at-spi2-common_2.52.0-1build1_all.deb"
+    },
+    {
+      "package": "libxcb-render0",
+      "version": "1.15-1ubuntu2",
+      "architecture": "arm64",
+      "sha256": "de6dafb552bab55a848b4017087eb0d9ce25fc0e1fd083a4fca5f71de9058934",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb-render0_1.15-1ubuntu2_arm64.deb"
+    },
+    {
+      "package": "libopenal-data",
+      "version": "1:1.23.1-4build1",
+      "architecture": "all",
+      "sha256": "0de2f2b7a29fa337432fa044ce6c238bc511b83dac14d68a32673d9803cbab83",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/universe/o/openal-soft/libopenal-data_1.23.1-4build1_all.deb"
+    },
+    {
+      "package": "libsndio7.0",
+      "version": "1.9.0-0.3build3",
+      "architecture": "arm64",
+      "sha256": "33c1ae918bd758a4fb7fec64bfee98d4c7b880ade313980dd682fd6e6727f983",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/universe/s/sndio/libsndio7.0_1.9.0-0.3build3_arm64.deb"
+    },
+    {
+      "package": "libfribidi0",
+      "version": "1.0.13-3build1",
+      "architecture": "arm64",
+      "sha256": "52d3d13602ec19e01932d653b53ea9fe43252ff39aa196b81f96b69006e4c3a2",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/f/fribidi/libfribidi0_1.0.13-3build1_arm64.deb"
+    },
+    {
+      "package": "libharfbuzz0b",
+      "version": "8.3.0-2build2",
+      "architecture": "arm64",
+      "sha256": "f6917480f6e2df79563398f4fcfc25167fcaa512f35fe1f595a6e3fa7b78a46d",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/h/harfbuzz/libharfbuzz0b_8.3.0-2build2_arm64.deb"
+    },
+    {
+      "package": "libthai0",
+      "version": "0.1.29-2build1",
+      "architecture": "arm64",
+      "sha256": "c4c01317f90cec985253f360451df9cf3f45ef68cf409c8e21ab5d379ee1e883",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libt/libthai/libthai0_0.1.29-2build1_arm64.deb"
+    },
+    {
+      "package": "libgraphite2-3",
+      "version": "1.3.14-2build1",
+      "architecture": "arm64",
+      "sha256": "8f15a4393c26af67bf07751f85027f2bef5fcce239eab21194fb5fac4f5b9959",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/graphite2/libgraphite2-3_1.3.14-2build1_arm64.deb"
+    },
+    {
+      "package": "libthai-data",
+      "version": "0.1.29-2build1",
+      "architecture": "all",
+      "sha256": "6035d4a714290b97816bed7f3bf64921c6358ddb84d1dacdddccdc1cf39bffb7",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libt/libthai/libthai-data_0.1.29-2build1_all.deb"
+    },
+    {
+      "package": "libdatrie1",
+      "version": "0.2.13-3build1",
+      "architecture": "arm64",
+      "sha256": "cb148b2bb3c4ee4be7c1316ba4970e60d9aade63d71d41ae5b2897f5004704d0",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libd/libdatrie/libdatrie1_0.2.13-3build1_arm64.deb"
+    },
+    {
+      "package": "libasyncns0",
+      "version": "0.8-6build4",
+      "architecture": "arm64",
+      "sha256": "acda11529a3bdc32961cec888060417d835be9626b00ab8f34607f7935cda11f",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/liba/libasyncns/libasyncns0_0.8-6build4_arm64.deb"
+    },
+    {
+      "package": "libbrotli1",
+      "version": "1.1.0-2build2",
+      "architecture": "arm64",
+      "sha256": "cabf3462d908e72f2e594f19ae87c581c4614f099947e38fbd865bf8eae27014",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/b/brotli/libbrotli1_1.1.0-2build2_arm64.deb"
+    },
+    {
+      "package": "libssh2-1t64",
+      "version": "1.11.0-4.1ubuntu0.24.04.4",
+      "architecture": "arm64",
+      "sha256": "00be138b7f571dce05bcebeef095d61aa0b2c5603fd0084b334490dc305cb6a5",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libs/libssh2/libssh2-1t64_1.11.0-4.1ubuntu0.24.04.4_arm64.deb"
+    },
+    {
+      "package": "libva2",
+      "version": "2.20.0-2ubuntu0.2",
+      "architecture": "arm64",
+      "sha256": "5b2d103a48eff750159de741c890ab6ebfe8eb59e8bc9ad5ee2331455ae7c76b",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/universe/libv/libva/libva2_2.20.0-2ubuntu0.2_arm64.deb"
+    },
+    {
+      "package": "libvdpau1",
+      "version": "1.5-2build1",
+      "architecture": "arm64",
+      "sha256": "cdf07628f0b9ad247e78bbbe65059d5148590548ab4808470dea9c8bdacc72de",
+      "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libv/libvdpau/libvdpau1_1.5-2build1_arm64.deb"
+    }
+  ]
+}

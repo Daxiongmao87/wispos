@@ -1,0 +1,12 @@
+# WispOS default target: the base system (multi-user + graphical) plus the one session.
+# Replaces ROCKNIX's rocknix.target (which started the emulation frontend) and answers to its name, so
+# the hardware services ordered "Before=rocknix.target" still start ahead of the session.
+[Unit]
+Description=WispOS
+Requires=multi-user.target graphical.target
+After=graphical.target
+Conflicts=rescue.target
+AllowIsolate=yes
+
+[Install]
+Alias=default.target rocknix.target

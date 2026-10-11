@@ -1,0 +1,13 @@
+# DEV BUILDS ONLY. See /usr/bin/wisp-dev-announce.
+[Unit]
+Description=Dev build: tell the developer's machine where this device is
+After=NetworkManager.service wisp-firstboot.service
+ConditionPathExists=/flash/wispos/dev.conf
+
+[Service]
+ExecStart=/usr/bin/wisp-dev-announce
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

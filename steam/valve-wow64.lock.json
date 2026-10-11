@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "appid": 4628740,
+  "app_name": "Proton 11.0 (ARM64)",
+  "app_dir": "Proton 11.0 (ARM64)",
+  "source": "files/lib/wine/aarch64-windows/wow64.dll",
+  "tool": "Proton11-ARM64-A57-v80",
+  "tool_path": "files/lib/wine/aarch64-windows/wow64.dll",
+  "known_good": [
+    {
+      "sha256": "b361749969b28320e919ea576be678321d0a5b9cf1329189082a321333c2d8a2",
+      "size": 524288,
+      "valve_build": "proton-11.0-2e-arm64 (app 4628740 build 25833186)",
+      "tested": "2026-10-10 on the handheld together with the official fex-emu-wine 2610 modules: Quake III Arena timedemo 26.4 fps without NoExec, Worms Armageddon unchanged, Carmageddon 2 past NoExec"
+    }
+  ],
+  "why": "Valve's own wow64.dll is the half that tells FEX the process has DEP disabled (BTCpuNotifyProcessExecuteFlagsChange); the community Proton's Wine lacks the call. It is LSE-free, and it exists only inside Valve's Proton app, which Steam serves to signed-in accounts only (an anonymous login gets AccessDenied for its depot key: docs/WISPOS-NOTES.md). So Steam installs that app (the seeded default tool is the community one, so nothing else would) and wisp-wow64-valve copies this one file, ONLY when its sha256 is on known_good: an updated Valve build is never used until it has been tested and pinned here."
+}

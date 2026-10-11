@@ -1,0 +1,13 @@
+# DEV BUILDS ONLY. Hold SELECT + START for 3 s on the pad to run the on-panel refresh-rate/frame-rate test (stops Steam and sway while it runs). See /usr/lib/wispos-dev/diag/paneltest.py.
+[Unit]
+Description=Dev build: pad-triggered panel test (SELECT+START)
+After=local-fs.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/lib/wispos-dev/diag/paneltest.py watch
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

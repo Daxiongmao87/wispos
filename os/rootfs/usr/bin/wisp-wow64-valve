@@ -1,0 +1,108 @@
+#!/usr/bin/python3
+"""WispOS: bring Valve's own wow64.dll into the community Proton tool (the half of the Windows DEP fix that only Valve's Proton app contains).
+
+Background (docs/WISPOS-COMPAT-LAYER-SPEC.md, 2a, decided by the operator 2026-10-10): FEX >= 2607 can run a process with DEP disabled, but only if Wine tells it (Wine's wow64.dll
+calls BTCpuNotifyProcessExecuteFlagsChange). The community Proton's wow64.dll does not; Valve's does and is LSE-free. It is only inside Valve's `Proton 11.0 (ARM64)` Steam app, which
+needs a signed-in Steam (an anonymous login, steamcmd's, is refused). So Steam must install that app, and this program does both halves, once per session start (before Steam starts):
+  1. REQUEST: if no Steam library has an app manifest for it and it was never requested before, write a minimal manifest (StateFlags 2 = update required) so Steam queues the download
+     itself after sign-in, with no dialog; Steam's own Downloads page shows the progress. Requested at most once per lock (marker), so a user who uninstalls it is not fought.
+  2. COPY: once the app is installed (StateFlags 4, no update running) and its wow64.dll has a sha256 on the lock's known_good list, copy that one file over the tool's, atomically,
+     keeping the original once under <tool>/.wisp-orig/. Any other hash (a newer Valve build) is NOT used until it has been tested and pinned in steam/valve-wow64.lock.json.
+Idempotent. Until step 2 has happened Windows games run on the community wow64.dll: only pre-NX 32-bit programs that execute read/write memory can fail (NoExec).
+usage: wisp-wow64-valve        exit 0 = fine or nothing to do, 1 = a file could not be written
+"""
+import glob, hashlib, json, os, shutil, sys
+from pathlib import Path
+
+LOCK = Path(os.environ.get('WISP_WOW64_LOCK', '/usr/share/wispos/valve-wow64.lock.json'))
+STEAM_ROOT = Path(os.environ.get('WISP_STEAM_ROOT', '/storage/wispos/runtime/steam'))
+STATE_DIR = Path(os.environ.get('WISP_WOW64_STATE', '/storage/wispos/config'))
+ACTIVE_BITS = 256 | 1024                  # UpdateRunning, UpdateStarted: the same bits wisp-compat-gate treats as "Steam is downloading"
+INSTALLED = 4
+
+
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''): digest.update(block)
+    return digest.hexdigest()
+
+
+def library_dirs():
+    """steamapps directory of every Steam library folder (Steam's own list), the main one first."""
+    dirs = [STEAM_ROOT / 'steamapps']
+    try:
+        with open(STEAM_ROOT / 'steamapps/libraryfolders.vdf', errors='replace') as f:
+            for line in f:
+                parts = line.split('"')
+                if len(parts) >= 4 and parts[1] == 'path' and Path(parts[3], 'steamapps') not in dirs: dirs.append(Path(parts[3], 'steamapps'))
+    except OSError: pass
+    return dirs
+
+
+def state_flags(acf):
+    try:
+        with open(acf, errors='replace') as f:
+            for line in f:
+                parts = line.split('"')
+                if len(parts) >= 4 and parts[1] == 'StateFlags' and parts[3].isdigit(): return int(parts[3])
+    except OSError: pass
+    return None
+
+
+def request_text(lock):
+    return ('"AppState"\n{\n\t"appid"\t\t"%d"\n\t"Universe"\t\t"1"\n\t"name"\t\t"%s"\n\t"StateFlags"\t\t"2"\n\t"installdir"\t\t"%s"\n}\n'
+            % (lock['appid'], lock['app_name'], lock['app_dir']))
+
+
+def run(lock, libs=None, tools=None, state_dir=None):
+    """Returns (ok, messages)."""
+    libs = library_dirs() if libs is None else libs
+    tools = Path(tools) if tools else STEAM_ROOT / 'compatibilitytools.d'
+    state_dir = Path(state_dir) if state_dir else STATE_DIR
+    appid, messages = lock['appid'], []
+    manifests = [d / ('appmanifest_%d.acf' % appid) for d in libs]
+    present = [m for m in manifests if m.exists()]
+    if not present:
+        marker = state_dir / ('wow64-valve-%d.requested' % appid)
+        if marker.exists(): return True, ['Valve\'s Proton app is not installed and was requested before: not asking again']
+        try:
+            libs[0].mkdir(parents=True, exist_ok=True); manifests[0].write_text(request_text(lock))
+            state_dir.mkdir(parents=True, exist_ok=True); marker.write_text('requested\n')
+        except OSError as e: return False, ['could not write the install request: %s' % e]
+        return True, ['asked Steam to install %s (app %d) after sign-in' % (lock['app_name'], appid)]
+    manifest = present[0]; flags = state_flags(manifest)
+    if flags is None or not flags & INSTALLED or flags & ACTIVE_BITS:
+        return True, ['%s is not installed yet (StateFlags %s): waiting' % (lock['app_name'], flags)]
+    source = manifest.parent / 'common' / lock['app_dir'] / lock['source']
+    if not source.is_file(): return True, ['%s is installed but %s is not there' % (lock['app_name'], lock['source'])]
+    have = sha256_of(source)
+    if have not in {k['sha256'] for k in lock['known_good']}:
+        return True, ['Valve\'s wow64.dll %s.. is not a tested build: the community one stays (pin it in steam/valve-wow64.lock.json after a test)' % have[:12]]
+    tool = tools / lock['tool']
+    rel = lock['tool_path']
+    if rel.startswith('/') or '..' in Path(rel).parts: return False, ['unsafe path in the lock: %s' % rel]
+    if not tool.is_dir(): return True, ['%s is not installed yet: nothing to do' % lock['tool']]
+    dest = tool / rel
+    if dest.is_file() and not dest.is_symlink() and sha256_of(dest) == have: return True, ['Valve\'s wow64.dll is already in the tool']
+    try:
+        orig = tool / '.wisp-orig' / rel
+        if (dest.exists() or dest.is_symlink()) and not orig.exists():
+            orig.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(dest, orig, follow_symlinks=False)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name('.' + dest.name + '.wisp-new')
+        shutil.copyfile(source, tmp); os.chmod(tmp, 0o755); os.replace(tmp, dest)
+    except OSError as e: return False, ['could not write %s: %s' % (rel, e)]
+    return True, ['Valve\'s wow64.dll %s.. put into %s' % (have[:12], lock['tool'])]
+
+
+def main():
+    try: lock = json.loads(LOCK.read_text())
+    except (OSError, ValueError) as e:
+        print('wisp-wow64-valve: cannot read the lock %s: %s' % (LOCK, e)); return 1
+    ok, messages = run(lock)
+    for m in messages: print('wisp-wow64-valve:', m)
+    return 0 if ok else 1
+
+
+if __name__ == '__main__': sys.exit(main())

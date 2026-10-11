@@ -1,0 +1,116 @@
+#!/bin/sh
+# tf2-card: find, format and mount the card in the TF2 slot (the second SD slot) and touch nothing else.
+# usage: tf2-card device | status | format [--label L] [--device D] | mount | umount | steam-format CALLED_AS [steam's arguments]
+# The TF2 slot is the device tree's second SD controller (mmc@4022000, own card-detect GPIO); the boot card is 4020000.mmc and is never touched: the target is chosen by
+# the controller the block device hangs off (sysfs), not by a name or number, and a caller-supplied device is only ever compared against that, never trusted.
+# Format = GPT with one ext4 partition (label default TF2, no root reserve). The SteamOS recipe adds `-O casefold`; this kernel has no CONFIG_UNICODE, so casefold
+# cannot be mounted here and is left out. The card is mounted at /storage/wispos/tf2 (the only place the OS writes), where Steam can use it as a library folder.
+# `steam-format` is what /usr/bin/steamos-polkit-helpers/steamos-format-{sdcard,device} run: it logs the call (arguments, caller, environment: Steam's real arguments are
+# still unknown) to $WISP_LOG_DIR/<name>.log, then formats and mounts. Exit 0 = done, 1 = refused or failed, 3 = no card in the slot (device/status only).
+# WISP_SYS / WISP_DEV / WISP_MOUNTS / WISP_TF2_HOST / WISP_TF2_MOUNT exist so the test can drive it against a fake sysfs; on the device they keep their defaults.
+set -u
+SYS=${WISP_SYS:-/sys}; DEV=${WISP_DEV:-/dev}; MOUNTS=${WISP_MOUNTS:-/proc/mounts}
+TF2_HOST=${WISP_TF2_HOST:-4022000.mmc}; MNT=${WISP_TF2_MOUNT:-/storage/wispos/tf2}
+MIN_SECTORS=2097152                                  # 1 GiB: anything smaller is not a card this tool should format
+
+die() { echo "tf2-card: $*" >&2; exit 1; }
+
+# Prints the block device name (mmcblkN) of the card in the TF2 slot, or returns 1 when no card is there.
+find_dev() {
+    for b in "$SYS"/block/mmcblk*; do
+        [ -e "$b" ] || continue
+        case $(readlink -f "$b") in */"$TF2_HOST"/*) echo "${b##*/}"; return 0;; esac
+    done
+    return 1
+}
+
+# Mount points of the card's partitions (device $1 = mmcblkN). Only $MNT, /run/media/* and /media/* may be unmounted here, plus the two places ROCKNIX's inherited
+# automount (/usr/bin/automount, run by udev when a card appears) puts an external card: /storage/games-external and the bind over /storage/roms. A partition mounted
+# anywhere else (/, /flash, /storage ...) means the OS itself lives on it, and the format is refused.
+release_mounts() {
+    while read -r src mp rest; do
+        case $src in "$DEV/$1"|"$DEV/$1"p[0-9]*) ;; *) continue;; esac
+        case $mp in "$MNT"|/run/media/*|/media/*|/storage/games-external|/storage/roms) umount "$mp" || die "cannot unmount $mp";; *) die "refusing: $src is mounted at $mp";; esac
+    done < "$MOUNTS"
+}
+
+cmd_device() { find_dev || { echo "tf2-card: no card in the TF2 slot" >&2; return 3; }; }
+
+cmd_status() {
+    name=$(find_dev) || { echo "no card in the TF2 slot"; return 3; }
+    echo "card: $DEV/$name, $(( $(cat "$SYS/block/$name/size") / 2048 )) MiB (controller $TF2_HOST)"
+    command -v blkid >/dev/null 2>&1 && blkid "$DEV/$name" "$DEV/${name}"p* 2>/dev/null
+    grep -E "^$DEV/$name(p[0-9]+)? " "$MOUNTS" || echo "not mounted"
+}
+
+cmd_format() {
+    label=TF2; want=
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --label) [ $# -ge 2 ] || die "--label needs a value"; label=$2; shift;;
+            --device) [ $# -ge 2 ] || die "--device needs a value"; want=$2; shift;;
+            *) die "unknown argument: $1";;
+        esac
+        shift
+    done
+    case $label in ''|*[!A-Za-z0-9._-]*) die "bad label (letters, digits, . _ - only)";; esac
+    [ "${#label}" -le 16 ] || die "label longer than 16 characters"
+    name=$(find_dev) || die "no card in the TF2 slot"
+    if [ -n "$want" ]; then                           # a device named by the caller must BE the TF2 card (or one of its partitions), else it is refused
+        w=${want#"$DEV"/}
+        case $w in "$name"|"$name"p[0-9]*) ;; *) die "refusing: $want is not the card in the TF2 slot ($DEV/$name)";; esac
+    fi
+    sectors=$(cat "$SYS/block/$name/size"); [ "$sectors" -ge "$MIN_SECTORS" ] || die "refusing: $DEV/$name is only $(( sectors / 2048 )) MiB"
+    echo "tf2-card: formatting $DEV/$name ($(( sectors / 2048 )) MiB, controller $TF2_HOST) as ext4 label $label"
+    release_mounts "$name"
+    parted -s "$DEV/$name" mklabel gpt mkpart primary ext4 1MiB 100% || die "partitioning failed"
+    partprobe "$DEV/$name" 2>/dev/null
+    n=0; while [ ! -e "$DEV/${name}p1" ] && [ "$n" -lt 10 ]; do sleep 1; n=$((n + 1)); done
+    [ -e "$DEV/${name}p1" ] || die "partition $DEV/${name}p1 did not appear"
+    mke2fs -q -F -t ext4 -m 0 -L "$label" "$DEV/${name}p1" || die "mke2fs failed"
+    echo "tf2-card: done, $DEV/${name}p1 is ext4 label $label"
+}
+
+cmd_mount() {
+    name=$(find_dev) || die "no card in the TF2 slot"
+    [ -e "$DEV/${name}p1" ] || die "the card has no partition: format it first"
+    if grep -q " $MNT " "$MOUNTS"; then echo "tf2-card: already mounted at $MNT"; return 0; fi
+    mkdir -p "$MNT" && mount -t ext4 -o noatime "$DEV/${name}p1" "$MNT" || die "mount failed (is the card formatted ext4?)"
+    echo "tf2-card: mounted $DEV/${name}p1 at $MNT"
+}
+
+# A card that is still there must unmount cleanly (a busy mount is an error); a card that was pulled out leaves a dead mount, which is released lazily.
+cmd_umount() {
+    grep -q " $MNT " "$MOUNTS" || { echo "tf2-card: not mounted"; return 0; }
+    if find_dev >/dev/null; then umount "$MNT" || die "cannot unmount $MNT"; else umount -l "$MNT" || die "cannot unmount $MNT (card removed)"; fi
+}
+
+# What Steam's "Format SD Card" runs. Steam's arguments are unknown until the log has been read, so unknown ones are logged and ignored; only --label and --device are used.
+cmd_steam_format() {
+    called=${1:-steamos-format}; [ $# -gt 0 ] && shift
+    log_dir=${WISP_LOG_DIR:-/storage/wispos/logs}; mkdir -p "$log_dir" 2>/dev/null
+    {
+        echo "=== $(date '+%Y-%m-%d %H:%M:%S') $called called"
+        echo "argv ($#): $*"
+        echo "uid=$(id -u) pid=$$ ppid=$PPID parent: $(tr '\0' ' ' < /proc/$PPID/cmdline 2>/dev/null | cut -c1-200)"
+        env | grep -E '^(STEAM|SUDO|PKEXEC|DBUS|DEVICE|LABEL|SD)' | sort
+    } >> "$log_dir/$called.log" 2>/dev/null
+    label=; dev=
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --label) label=${2:-}; [ $# -gt 0 ] && shift;;
+            --device) dev=${2:-}; [ $# -gt 0 ] && shift;;
+        esac
+        [ $# -gt 0 ] && shift
+    done
+    set --
+    [ -n "$label" ] && set -- "$@" --label "$label"
+    [ -n "$dev" ] && set -- "$@" --device "$dev"
+    cmd_format "$@" && cmd_mount
+}
+
+sub=${1:-}; [ $# -gt 0 ] && shift
+case $sub in
+    device) cmd_device;; status) cmd_status;; format) cmd_format "$@";; mount) cmd_mount;; umount) cmd_umount;; steam-format) cmd_steam_format "$@";;
+    *) echo "usage: tf2-card device | status | format [--label L] [--device D] | mount | umount" >&2; exit 2;;
+esac

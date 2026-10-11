@@ -1,0 +1,15 @@
+#!/bin/sh
+# Runs INSIDE `dbus-run-session` (Steam's private session bus), as its command: start the SteamOSManager1 role of wisp-steamos-manager FIRST, wait until its bus name exists (at most
+# 3 seconds), then become the command it was given (Steam). Why: Steam asks for the manager once, at start-up, and never again ("SteamOSManager: daemon not present", measured on the
+# device 2026-10-11, docs/WISPOS-NOTES.md); D-Bus activation starts the daemon only after that question, too late. Starting it first makes the question come back "present".
+# It never blocks Steam: a missing daemon just means Steam starts without the manager, as before. The daemon ends by itself when this session bus ends.
+#   wisp-steam-launch COMMAND [ARGS...]
+MANAGER=${WISP_MANAGER:-/usr/bin/wisp-steamos-manager}; BUSCTL=${WISP_BUSCTL:-busctl}; NAME=com.steampowered.SteamOSManager1
+[ $# -ge 1 ] || { echo "usage: wisp-steam-launch COMMAND [ARGS...]" >&2; exit 2; }
+"$MANAGER" --manager session &
+end=$(( $(date +%s) + 3 ))
+while [ "$(date +%s)" -lt "$end" ]; do
+    "$BUSCTL" --user list 2>/dev/null | grep -q "$NAME" && break
+    sleep 0.1 2>/dev/null || sleep 1                                  # a busybox without fractional sleep still polls, once a second
+done
+exec "$@"

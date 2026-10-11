@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "package": "fex-emu-wine",
+  "version": "2610-1~n",
+  "architecture": "arm64",
+  "url": "https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu/pool/main/f/fex-emu-wine/fex-emu-wine_2610-1~n_arm64.deb",
+  "size": 1827696,
+  "sha256": "edd6a8266f82199b1323549d64d75295b44773330dc61a44e3e5d9529bd100ba",
+  "license_member": "usr/share/doc/fex-emu-wine/copyright",
+  "license_sha256": "3eff9d6f8b61b27cb6c4c850ac3f23a54bc09a520b39bfe0ef7444f011208ba8",
+  "tool": "Proton11-ARM64-A57-v80",
+  "files": [
+    {
+      "member": "usr/lib/wine/aarch64-windows/libwow64fex.dll",
+      "sha256": "835d356dd8ad3e3a0882d6f94fd753cf0553d23dbccea9edc932bec3347e1ea7",
+      "tool_path": "files/lib/wine/aarch64-windows/libwow64fex.dll"
+    },
+    {
+      "member": "usr/lib/wine/aarch64-windows/libarm64ecfex.dll",
+      "sha256": "7f2d54ae1a0969f6e8efc65269f2e59cc0b03f3c87c2a1260fd78416222f1776",
+      "tool_path": "files/lib/wine/aarch64-windows/libarm64ecfex.dll"
+    },
+    {
+      "member": "usr/lib/wine/aarch64-unix/libwow64fex.so",
+      "sha256": "75677d6edf7e281158f5df63f354f58037f957b95064b35dd1eb2124743debd2",
+      "tool_path": "files/lib/wine/aarch64-unix/libwow64fex.so"
+    },
+    {
+      "member": "usr/lib/wine/aarch64-unix/libarm64ecfex.so",
+      "sha256": "fe7d3857f429c0924007df87b32e3bad16d7aae2f8814b21e952921aed0e3e65",
+      "tool_path": "files/lib/wine/aarch64-unix/libarm64ecfex.so"
+    }
+  ],
+  "why": "The FEX project's own ARMv8.0-clean Windows modules (0 LSE/RCPC instructions, and the DEP-disabled mode FEX-2607+ has) replace the older FEX-2605 pair in the community Proton tool, which has no DEP-disabled mode: pre-NX 32-bit programs (RollerCoaster Tycoon Deluxe, Carmageddon 2, Quake III's QVM JIT) die with 'NoExec instruction in entry block'. Stock upstream binaries, not built by us (operator 2026-10-10: no custom FEX builds). Also needs Valve's own wow64.dll (the half that tells FEX the process has DEP disabled), which comes from Valve's Proton app after sign-in (docs/WISPOS-COMPAT-LAYER-SPEC.md, 2a). Measured: Quake III 26.4 fps, Worms regression OK, Carmageddon 2 past NoExec (docs/WISPOS-NOTES.md, STOCK-BINARY RESULT).",
+  "source": "https://launchpad.net/~fex-emu/+archive/ubuntu/fex"
+}

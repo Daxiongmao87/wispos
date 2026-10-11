@@ -1,0 +1,10 @@
+# Watches the manifest Steam keeps for Valve's Proton 11.0 (ARM64) app (app 4628740, library folder 0) and runs wisp-wow64-valve on every change (docs/WISPOS-COMPAT-LAYER-SPEC.md, 2a).
+[Unit]
+Description=WispOS watch for Steam installing Valve's Proton app
+
+[Path]
+PathChanged=/storage/wispos/runtime/steam/steamapps/appmanifest_4628740.acf
+Unit=wisp-wow64-valve.service
+
+[Install]
+WantedBy=wispos.target

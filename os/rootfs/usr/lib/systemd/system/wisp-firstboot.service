@@ -1,0 +1,15 @@
+# Applies the optional settings on the FAT boot partition (Wi-Fi, SSH keys) before the network
+# and SSH come up. See /usr/bin/wisp-firstboot.
+[Unit]
+Description=WispOS settings from the boot partition
+RequiresMountsFor=/storage /flash
+Before=NetworkManager.service iwd.service sshd.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/wisp-firstboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

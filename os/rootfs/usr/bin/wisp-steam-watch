@@ -1,0 +1,149 @@
+#!/usr/bin/python3
+"""WispOS: restart the Steam session when its UI has silently failed to appear.
+
+The failure (docs/WISPOS-NOTES.md 4d, seen again 2026-10-09 on 3 of 4 starts): Steam's main window is MAPPED in Xwayland but sway never gets a view for it, Steam's
+renderer spins at 90-100% CPU, and the screen stays black until someone restarts the service. A normal start shows the window within about 4-5 minutes (measured), so
+this watches for: the session unit active, the Steam process up for more than STALL_AFTER seconds, its web helpers running, and no window of class `steam` in sway for
+CONFIRM consecutive checks. Then it restarts `wisp-steam` (never a reboot), logs why, and stops after MAX_RESTARTS in WINDOW seconds so a persistent fault cannot
+loop. A game running does not trigger it: the Steam window stays in sway's tree (hidden) while a game owns the screen. Touch /run/wisp-steam-watch-off to disable
+(development sessions that stop or replace Steam on purpose). Decision is a pure function (decide); stdlib only.
+
+It asks sway as rarely as the decision allows, because sway 1.11 keeps about 8 times the size of every IPC reply for good (measured on the handheld 2026-10-09:
+~42 kB per `get_tree` of a 5 KB tree, linear over 800 calls; the compositor's heap had reached 280 MB, all of it cold in zram, after 19 hours of polling).
+So: never before the stall rule can fire, once every HEALTHY_EVERY seconds after a Steam window has been seen, and every CHECK_EVERY only while a miss is being confirmed.
+"""
+import json, os, subprocess, sys, time
+
+STALL_AFTER = 420          # seconds the session must have been up before a missing window counts (a normal start needs 4-5 minutes)
+CONFIRM = 4                # consecutive checks that must all see no window (CHECK_EVERY apart)
+CHECK_EVERY = 15
+HEALTHY_EVERY = 900        # seconds between questions to sway once a Steam window has been seen (the failure being watched happens at start-up)
+MAX_RESTARTS, WINDOW = 3, 1800
+OFF_FILE = os.environ.get('WISP_STEAM_WATCH_OFF', '/run/wisp-steam-watch-off')
+LOG = os.environ.get('WISP_STEAM_WATCH_LOG', '/storage/wispos/logs/session/session.log')
+
+
+def decide(unit_active, uptime, helpers, has_window, misses, restarts_in_window):
+    """(action, misses): 'restart' once the stall is confirmed and the restart budget allows it, else None; misses is the new consecutive-miss count."""
+    if not unit_active or helpers < 3 or uptime < STALL_AFTER or has_window:
+        return None, 0
+    misses += 1
+    if misses >= CONFIRM and restarts_in_window < MAX_RESTARTS:
+        return 'restart', 0
+    return None, misses
+
+
+def need_query(unit_active, uptime, helpers, since_seen, misses):
+    """Whether sway should be asked now: only when the answer could change a decision. since_seen: seconds since a Steam window was last seen in this session (None: not yet)."""
+    if not unit_active or helpers < 3 or uptime < STALL_AFTER:
+        return False
+    return misses > 0 or since_seen is None or since_seen >= HEALTHY_EVERY
+
+
+def step(state, unit_active, uptime, helpers, ask_sway, restarts_in_window, now):
+    """One check round: (action, new state). state = {'misses': consecutive misses, 'seen_at': when a window was last seen, or None}; ask_sway() -> bool is called only if needed."""
+    seen_at = state['seen_at'] if uptime >= STALL_AFTER else None           # a freshly started session has not been seen yet
+    has_window = True                                                        # not asked: nothing to decide this round
+    if need_query(unit_active, uptime, helpers, None if seen_at is None else now - seen_at, state['misses']):
+        has_window = ask_sway()
+        if has_window: seen_at = now
+    action, misses = decide(unit_active, uptime, helpers, has_window, state['misses'], restarts_in_window)
+    return action, {'misses': misses, 'seen_at': seen_at}
+
+
+def run(*args):
+    return subprocess.run(args, capture_output=True, text=True, timeout=30)
+
+
+def has_steam_window():
+    r = run('swaymsg', '-t', 'get_tree')
+    if r.returncode != 0:
+        return True                      # cannot tell (sway down): never restart on a guess
+    def walk(n):
+        if (n.get('window_properties') or {}).get('class') == 'steam': return True
+        return any(walk(c) for c in n.get('nodes', []) + n.get('floating_nodes', []))
+    return walk(json.loads(r.stdout))
+
+
+def unit_uptime():
+    r = run('systemctl', 'show', 'wisp-steam', '-p', 'ActiveState', '-p', 'ActiveEnterTimestampMonotonic')
+    kv = dict(l.split('=', 1) for l in r.stdout.splitlines() if '=' in l)
+    if kv.get('ActiveState') != 'active': return False, 0
+    try: started = int(kv.get('ActiveEnterTimestampMonotonic', '0')) / 1e6
+    except ValueError: started = 0
+    mono = float(open('/proc/uptime').read().split()[0])
+    return True, max(0.0, mono - started)
+
+
+def helpers():
+    r = run('pidof', 'steamwebhelper')
+    return len(r.stdout.split())
+
+
+def thread_table(proc_root, pids, limit=4):
+    """The busiest threads of the given processes as short text lines: name, state, CPU time (jiffies), the kernel function it waits in and, for a thread blocked in a
+    syscall, the syscall number and its first arguments (a futex wait shows the address and value). Read from proc_root/<pid>/task/<tid>/{comm,stat,wchan,syscall}."""
+    rows = []
+    for pid in pids:
+        task = os.path.join(proc_root, str(pid), 'task')
+        try: tids = sorted(os.listdir(task))
+        except OSError: continue
+        for tid in tids:
+            base = os.path.join(task, tid)
+            def read(name):
+                try:
+                    with open(os.path.join(base, name)) as f: return f.read().strip()
+                except OSError: return ''
+            stat = read('stat')
+            try:
+                fields = stat[stat.rindex(')') + 2:].split()            # after "(comm)": state is fields[0], utime/stime are fields[11], fields[12]
+                state, cpu = fields[0], int(fields[11]) + int(fields[12])
+            except (ValueError, IndexError):
+                continue
+            sysc = read('syscall').split()
+            rows.append((cpu, '%s/%s %s cpu=%d wchan=%s syscall=%s' % (pid, tid, read('comm') or '?', cpu, read('wchan') or '-', ' '.join(sysc[:4]) if sysc and sysc[0] != 'running' else (sysc[0] if sysc else '-'))))
+    return [text.replace('\n', ' ') for _, text in sorted(rows, reverse=True)[:limit]]
+
+
+def gpu_faults():
+    """How many GPU page faults the kernel has logged this boot (a Mali driver fault is a lead for a black or frozen screen); -1 if the log cannot be read."""
+    try: return sum(1 for l in run('dmesg').stdout.splitlines() if 'Unhandled Page fault' in l)
+    except (subprocess.SubprocessError, OSError): return -1
+
+
+def evidence(proc_root='/proc'):
+    """What to write to the log before the session is restarted, so every field stall leaves a diagnosis behind (2026-10-10: web helpers sat in futex waits on a
+    locked Mesa mutex in a frozen game; the same may hold for a black UI)."""
+    pids = run('pidof', 'steamwebhelper').stdout.split()
+    return ['GPU page faults this boot: %d' % gpu_faults()] + thread_table(proc_root, pids)
+
+
+def log(message):
+    try:
+        with open(LOG, 'a') as f: f.write('%s %s\n' % (time.strftime('%H:%M:%S'), message))
+    except OSError: pass
+    print(message, flush=True)
+
+
+def main():
+    state, restarts = {'misses': 0, 'seen_at': None}, []
+    while True:
+        time.sleep(CHECK_EVERY)
+        if os.path.exists(OFF_FILE): state = {'misses': 0, 'seen_at': None}; continue
+        try:
+            active, up = unit_uptime()
+            now = time.time(); restarts = [t for t in restarts if now - t < WINDOW]
+            action, state = step(state, active, up, helpers() if active else 0, has_steam_window, len(restarts), now)
+            if action == 'restart':
+                log('wisp-steam-watch: Steam up %d s with web helpers but no Steam window in sway for %d checks; restarting wisp-steam (%d of %d in %d s)'
+                    % (up, CONFIRM, len(restarts) + 1, MAX_RESTARTS, WINDOW))
+                try:
+                    for line in evidence(): log('wisp-steam-watch:   evidence: ' + line)
+                except (subprocess.SubprocessError, OSError, ValueError) as e:
+                    log('wisp-steam-watch:   evidence unavailable: %s' % e)
+                restarts.append(now); run('systemctl', 'restart', '--no-block', 'wisp-steam')
+        except (subprocess.SubprocessError, OSError, ValueError) as e:
+            log('wisp-steam-watch: check failed: %s' % e); state = {'misses': 0, 'seen_at': state['seen_at']}
+
+
+if __name__ == '__main__': sys.exit(main())

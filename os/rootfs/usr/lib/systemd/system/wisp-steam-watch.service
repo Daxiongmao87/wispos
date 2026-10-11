@@ -1,0 +1,16 @@
+# Restarts the Steam session when its UI window silently fails to appear (black screen); see /usr/bin/wisp-steam-watch.
+[Unit]
+Description=WispOS Steam UI watchdog
+After=sway.service wisp-steam.service
+Wants=sway.service
+
+[Service]
+Environment=XDG_RUNTIME_DIR=/var/run/0-runtime-dir
+Environment=SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
+ExecStart=/usr/bin/wisp-steam-watch
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=wispos.target

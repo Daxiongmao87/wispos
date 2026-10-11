@@ -1,0 +1,14 @@
+# DEV BUILDS ONLY. Flight recorder: one line of system state every 10 s in the journal (nothing on the card; os/dev/log-stream.sh keeps it on the host). See /usr/bin/wisp-dev-blackbox.
+[Unit]
+Description=Dev build: flight recorder for lock-ups
+After=local-fs.target
+
+[Service]
+ExecStart=/usr/bin/wisp-dev-blackbox
+SyslogIdentifier=wisp-blackbox
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Write the WispOS boot report shortly after boot
+
+[Timer]
+OnBootSec=100
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
