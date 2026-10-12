@@ -77,8 +77,10 @@ Optional files in this folder are applied at every boot:
                                  psk=YOUR PASSPHRASE
                     (see wifi.conf.example). Joins that WPA2 network and keeps it.
   authorized_keys   OpenSSH public keys allowed to log in as root and as wisp.
+  ssh               an empty file named "ssh": turns SSH on at the first boot (the Raspberry Pi convention).
 
-Log in over SSH as user "wisp", password "wisp". The system partition is read-only, so the
+SSH is OFF by default. Turn it on with that file, or on the device with `wisp-ssh on` (desktop mode's menu does the same);
+the choice persists. Then log in as user "wisp", password "wisp". The system partition is read-only, so the
 password is part of the image (os/accounts.py); use authorized_keys to avoid depending on it.
 Everything else lives on the STORAGE partition under /storage.
 EOT
@@ -86,6 +88,7 @@ printf 'ssid=MyNetwork\npsk=MyPassphrase\n' >"$STAGE/boot/wispos/wifi.conf.examp
 # Dev build only (guarded above): the builder's own Wi-Fi settings and/or SSH key, plus a marker file.
 if [ "${WISP_DEV:-}" = 1 ]; then
     printf 'DEVELOPMENT BUILD. This image may contain a key or Wi-Fi credential. Do not publish or share it.\n' >"$STAGE/boot/wispos/DEV-BUILD.txt"
+    : >"$STAGE/boot/wispos/ssh"                                                   # a development image has SSH on by default (operator, 2026-10-11)
     if [ -n "${WISP_WIFI_CONF:-}" ]; then cp "$WISP_WIFI_CONF" "$STAGE/boot/wispos/wifi.conf"; fi
     if [ -n "${WISP_SSH_KEY:-}" ]; then cp "$WISP_SSH_KEY" "$STAGE/boot/wispos/authorized_keys"; fi
     if [ -n "${WISP_DEV_ANNOUNCE:-}" ]; then printf 'announce=%s\n' "$WISP_DEV_ANNOUNCE" >"$STAGE/boot/wispos/dev.conf"; fi

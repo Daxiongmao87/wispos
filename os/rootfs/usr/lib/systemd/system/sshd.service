@@ -1,7 +1,11 @@
-# WispOS: SSH is always on (no kernel-command-line or marker-file condition, unlike ROCKNIX's unit).
+# WispOS: SSH is OFF by default and the choice persists (operator, 2026-10-11): the unit starts only while /storage/.config/wispos/ssh-enabled exists.
+# `wisp-ssh on|off|toggle|status` is the switch (the desktop-mode menu calls it); an empty file named `ssh` on the boot partition seeds it once at first boot
+# (wisp-firstboot), the Raspberry Pi convention, which is how development images ship with SSH on.
 [Unit]
 Description=OpenSSH server daemon
-After=network.target
+After=network.target wisp-firstboot.service
+RequiresMountsFor=/storage
+ConditionPathExists=/storage/.config/wispos/ssh-enabled
 
 [Service]
 Restart=on-failure

@@ -55,6 +55,10 @@ check "wisp can read the journal" "as_wisp 'journalctl -b --no-pager -n 1'"
 check "root has no password: password login as root is refused" "! SSH_ASKPASS='$D/askpass.sh' SSH_ASKPASS_REQUIRE=force ssh ${SSHO[*]} -o PubkeyAuthentication=no root@127.0.0.1 true"
 check "telemetry and the emulator frontend are gone" "! as_root 'ls /usr/bin/rocknix-report-stats /usr/bin/emulationstation /usr/lib/libretro'"
 check "the system is the read-only squashfs" "as_wisp mount | grep -q 'on / type squashfs'"
+# --- SSH is off by default and persistent (operator, 2026-10-11): this test image is a dev image, so its `ssh` marker file turned it on at first boot, once ----------------------------
+check "SSH was seeded on by the boot partition's ssh file (first boot) and the unit carries the persistent-flag condition" \
+    "as_root 'test -e /storage/.config/wispos/ssh-enabled && test -e /storage/.config/wispos/ssh-seeded && grep -q ConditionPathExists=/storage/.config/wispos/ssh-enabled /usr/lib/systemd/system/sshd.service'"
+check "wisp-ssh status reports on (exit 0) with the host name and an address" "as_root 'wisp-ssh status' | grep -q 'ssh: on' && as_root 'wisp-ssh status' | grep -q '^address: '"
 # --- The SteamOS contract daemon, started by the buses (docs/WISPOS-STEAMOS-CONTRACT.md) -------------
 # Atomupd1 is asked for on the SYSTEM bus; nothing enables the unit, the bus activates it. SteamOSManager1 is asked for on Steam's SESSION bus: a throwaway session bus here.
 check "Atomupd1: the system bus starts wisp-steamos-manager and it answers with the image's own version" \

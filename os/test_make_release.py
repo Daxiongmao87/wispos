@@ -20,6 +20,17 @@ class Base(unittest.TestCase):
         self.kernel, self.system = self.d / 'Image', self.d / 'SYSTEM'
         self.kernel.write_bytes(os.urandom(200_000)); self.system.write_bytes(os.urandom(500_000))
 
+    def tree(self, conditional_ssh):
+        import accounts
+        t = self.d / ('tree-ok' if conditional_ssh else 'tree-gaps')
+        if t.exists(): return t
+        (t / 'etc/ssh').mkdir(parents=True); (t / 'usr/lib/systemd/system').mkdir(parents=True); (t / 'usr/share/wispos').mkdir(parents=True)
+        (t / 'etc/shadow').write_text('root:*:1::::::\nwisp:$6$x$y:1::::::\n'); (t / 'etc/os-release').write_text('ID="wispos"\n'); (t / 'etc/ssh/sshd_config').write_text('PasswordAuthentication no\nPermitRootLogin no\n')
+        (t / 'usr/lib/systemd/system/sshd.service').write_text('[Unit]\n' + ('ConditionPathExists=/storage/.config/wispos/ssh-enabled\n' if conditional_ssh else '') + '[Install]\nWantedBy=multi-user.target\n')
+        (t / 'usr/lib/systemd/system/multi-user.target.wants').mkdir(); (t / 'usr/lib/systemd/system/multi-user.target.wants/sshd.service').symlink_to('../sshd.service')
+        (t / 'usr/share/wispos/update.conf').write_text('{}'); (t / 'usr/share/wispos/update-key.pub').write_text('k')
+        return t
+
     def tool(self, *args, check=True):
         r = subprocess.run(['python3', str(TOOL), *args], capture_output=True, text=True, env=self.env)
         if check: self.assertEqual(r.returncode, 0, r.stderr)
@@ -29,7 +40,7 @@ class Base(unittest.TestCase):
 
     def build(self, out, *extra, base='http://127.0.0.1:1', check=True):
         return self.tool('build', '--kernel', str(self.kernel), '--system', str(self.system), '--build-id', '20261012.1', '--version', '0.1.1', '--base-url', base,
-                         '--out', str(out), '--key', str(self.priv), '--allow-http', *extra, check=check)
+                         '--out', str(out), '--key', str(self.priv), '--allow-http', '--tree', str(self.tree(True)), '--extlinux', '/nonexistent', *extra, check=check)
 
 
 class KeyTests(Base):
@@ -54,12 +65,12 @@ class BuildTests(Base):
         sig = base64.b64decode((out / 'manifest.json.sig').read_bytes())
         r = subprocess.run(['openssl', 'pkeyutl', '-verify', '-rawin', '-in', str(out / 'manifest.json'), '-sigfile', '/dev/stdin', '-pubin', '-inkey', str(self.pub)], input=sig, capture_output=True)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertNotIn('WARNING', (out / 'RELEASE.txt').read_text())
+        self.assertNotIn('NOT the public key', (out / 'RELEASE.txt').read_text()); self.assertNotIn('--allow-gaps', (out / 'RELEASE.txt').read_text())
 
     def argv(self, out, **over):
         opts = {'--kernel': str(self.kernel), '--system': str(self.system), '--build-id': '20261012.1', '--version': '0.1.1', '--base-url': 'https://example.invalid/r', '--out': str(out),
                 '--key': str(self.priv), **over}
-        return ['build', *[x for kv in opts.items() for x in kv]]
+        return ['build', '--tree', str(self.tree(True)), '--extlinux', '/nonexistent', *[x for kv in opts.items() for x in kv]]
 
     def test_a_major_update_is_marked(self):
         self.keygen(); self.build(self.d / 'rel', '--major')
@@ -83,6 +94,31 @@ class BuildTests(Base):
     def test_a_key_the_images_do_not_carry_is_a_loud_warning(self):
         self.keygen(); self.pub.write_text(subprocess.run(['openssl', 'pkey', '-in', str(self.priv), '-pubout'], capture_output=True, text=True).stdout.replace('A', 'B', 1))
         self.build(self.d / 'rel'); self.assertIn('WARNING: this key is NOT the public key baked into the images', (self.d / 'rel/RELEASE.txt').read_text())
+
+
+class GateTests(Base):
+    """The release gate: check_release.py --strict decides before anything is written."""
+    def args(self, out, *extra):
+        return ['build', '--kernel', str(self.kernel), '--system', str(self.system), '--build-id', '20261012.1', '--version', '0.1.1', '--base-url', 'https://example.invalid/r', '--out', str(out),
+                '--key', str(self.priv), '--tree', str(self.tree(self.conditional)), '--extlinux', '/nonexistent', *extra]
+
+    def test_a_system_with_gaps_is_refused_before_anything_is_written_and_allow_gaps_says_so(self):
+        self.keygen(); self.conditional = False
+        r = self.tool(*self.args(self.d / 'rel'), check=False)
+        self.assertEqual(r.returncode, 2); self.assertIn('release gate refuses', r.stderr); self.assertIn('sshd starts at boot', r.stderr); self.assertFalse((self.d / 'rel').exists())
+        r = self.tool(*self.args(self.d / 'rel2', '--allow-gaps'))
+        self.assertIn('released with --allow-gaps', (self.d / 'rel2/RELEASE.txt').read_text())
+
+    def test_a_system_that_meets_the_profile_is_released_without_a_warning(self):
+        self.keygen(); self.conditional = True
+        self.tool(*self.args(self.d / 'rel'))
+        self.assertNotIn('--allow-gaps', (self.d / 'rel/RELEASE.txt').read_text())
+
+    def test_a_missing_tree_is_an_error_not_a_pass(self):
+        self.keygen()
+        r = self.tool('build', '--kernel', str(self.kernel), '--system', str(self.system), '--build-id', '20261012.1', '--version', '0.1.1', '--base-url', 'https://example.invalid/r',
+                      '--out', str(self.d / 'rel'), '--key', str(self.priv), '--tree', str(self.d / 'nowhere'), check=False)
+        self.assertEqual(r.returncode, 2); self.assertIn('not an unpacked SYSTEM tree', r.stderr)
 
 
 class RoundTripTests(Base):

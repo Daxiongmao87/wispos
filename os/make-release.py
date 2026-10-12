@@ -6,9 +6,12 @@
         updated by a new key without a re-flash, so an existing key is left alone and the command stops. The PUBLIC key is the one baked into every image.
   os/make-release.py build --kernel FILE --system FILE --build-id YYYYMMDD.N --version X.Y.Z --base-url URL --out DIR
                            [--key PRIVATE.pem] [--requires X.Y.Z] [--major] [--hw-device H700] [--allow-http]
+                           [--tree SYSTEM_TREE] [--extlinux FILE] [--allow-gaps]
         Writes DIR/KERNEL, DIR/SYSTEM, DIR/manifest.json, DIR/manifest.json.sig and DIR/RELEASE.txt. BASE_URL is where the release's assets will be (for GitHub:
         https://github.com/OWNER/REPO/releases/download/TAG); the manifest names KERNEL and SYSTEM there, and the device finds the manifest itself at the stable
         https://github.com/OWNER/REPO/releases/latest/download/manifest.json. Nothing is uploaded: publishing is the operator's act.
+THE RELEASE GATE (operator, 2026-10-11): before anything is written, the SYSTEM being released (--tree, default the work tree's rootfs/tree) is checked with check_release.py --strict;
+any gap against the release profile (SSH on by default, ROCKNIX leftovers in the boot graph, no update source, ...) refuses the release. --allow-gaps releases anyway and says so in RELEASE.txt.
 KERNEL is the file the image carries as /KERNEL (out/kernel/Image: the kernel with the initramfs inside it) and SYSTEM the squashfs (out/SYSTEM). The two always go together
 (the modules in SYSTEM must match the kernel).
 The signature is over the exact bytes of manifest.json (openssl pkeyutl -sign -rawin, base64 in manifest.json.sig). The build refuses a build id or version that cannot compare,
@@ -18,6 +21,8 @@ import argparse, base64, hashlib, json, os, re, shutil, stat, subprocess, sys, t
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+WORK = Path(os.environ.get('WISP_WORK', '/mnt/hdd/wispos-staging/wispos-os-20261007'))
 DEFAULT_PRIVATE = Path.home() / '.wispos-release' / 'update-signing.pem'
 BAKED_PUBLIC = Path(os.environ.get('WISP_BAKED_PUBLIC', HERE / 'steamos' / 'update-key.pub'))      # the override is for tests
 
@@ -52,6 +57,14 @@ def sha256_of(path):
     return h.hexdigest()
 
 
+def release_gaps(a):
+    """The DIFFERS rows of the release-readiness report for the SYSTEM tree being released."""
+    import check_release
+    tree = Path(a.tree or WORK / 'rootfs/tree'); ext = Path(a.extlinux or WORK / 'image/boot/extlinux/extlinux.conf')
+    if not (tree / 'etc').is_dir(): die(f'cannot run the release gate: {tree} is not an unpacked SYSTEM tree (use --tree)')
+    return [f"{r['what']}: now {r['current']}" for r in check_release.rows(tree, ext.read_text() if ext.is_file() else None) if r['status'] == 'DIFFERS']
+
+
 def build(a):
     if not re.fullmatch(r'\d{8}\.\d+', a.build_id): die(f'--build-id must look like 20261012.1, not {a.build_id!r}')
     if not re.fullmatch(r'\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?', a.version): die(f'--version must look like 0.1.0, not {a.version!r}')
@@ -63,6 +76,9 @@ def build(a):
     if stat.S_IMODE(key.stat().st_mode) & 0o077: die(f'{key} is readable by others: chmod 600 it')
     for name, p in (('--kernel', a.kernel), ('--system', a.system)):
         if not Path(p).is_file() or Path(p).stat().st_size == 0: die(f'{name} {p} is missing or empty')
+    gaps = release_gaps(a)
+    if gaps and not a.allow_gaps:
+        die('the release gate refuses this SYSTEM (os/check_release.py): ' + '; '.join(gaps) + '\n  fix them, or pass --allow-gaps to release anyway (RELEASE.txt will say so)')
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()): die(f'{out} is not empty: a release directory is made once')
     files = {}
@@ -82,10 +98,11 @@ def build(a):
         mine = Path(d, 'pub').read_text().strip()
     baked = BAKED_PUBLIC.read_text().strip() if BAKED_PUBLIC.exists() else None
     warn = '' if baked == mine else ('\nWARNING: this key is NOT the public key baked into the images (%s): every device would reject this release.' % (BAKED_PUBLIC if baked else 'none is committed yet'))
+    gap_note = ('\nWARNING: released with --allow-gaps; the release gate reported: ' + '; '.join(gaps) + '\n') if gaps else ''
     (out / 'RELEASE.txt').write_text(f'''WispOS release {a.version} (build {a.build_id}), signed update.
 Upload these four files as the assets of one GitHub Release (tag of your choice; BASE_URL in the manifest is {base}):
   KERNEL ({files['KERNEL']['size']} bytes)  SYSTEM ({files['SYSTEM']['size']} bytes)  manifest.json  manifest.json.sig
-Devices find the manifest at .../releases/latest/download/manifest.json, so this must be the LATEST release (not a pre-release or draft).{warn}
+Devices find the manifest at .../releases/latest/download/manifest.json, so this must be the LATEST release (not a pre-release or draft).{warn}{gap_note}
 ''')
     print((out / 'RELEASE.txt').read_text())
 
@@ -96,7 +113,7 @@ def main(argv):
     b = sub.add_parser('build')
     for opt in ('--kernel', '--system', '--build-id', '--version', '--base-url', '--out'): b.add_argument(opt, required=True)
     b.add_argument('--key', default=str(DEFAULT_PRIVATE)); b.add_argument('--requires', default=''); b.add_argument('--hw-device', default='H700')
-    b.add_argument('--major', action='store_true'); b.add_argument('--allow-http', action='store_true'); b.set_defaults(fn=build)
+    b.add_argument('--major', action='store_true'); b.add_argument('--allow-http', action='store_true'); b.add_argument('--tree'); b.add_argument('--extlinux'); b.add_argument('--allow-gaps', action='store_true'); b.set_defaults(fn=build)
     a = ap.parse_args(argv); a.fn(a); return 0
 
 

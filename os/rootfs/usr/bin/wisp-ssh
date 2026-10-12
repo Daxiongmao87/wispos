@@ -1,0 +1,25 @@
+#!/bin/sh
+# wisp-ssh: the SSH on/off switch (operator, 2026-10-11: off by default, a persistent toggle; the desktop-mode menu calls this).
+#   wisp-ssh on        remember "on" (a file on /storage, so it survives reboots) and start sshd now
+#   wisp-ssh off       forget it and stop sshd now; open sessions end
+#   wisp-ssh toggle    the other state
+#   wisp-ssh status    prints "ssh: on" or "ssh: off" and, when on, how to reach the device; exit 0 when on, 3 when off
+FLAG=${WISP_SSH_FLAG:-/storage/.config/wispos/ssh-enabled}; SYSTEMCTL=${WISP_SYSTEMCTL:-systemctl}
+is_on() { [ -e "$FLAG" ]; }
+status() {
+    if is_on; then
+        echo "ssh: on"; echo "host name: $(hostname 2>/dev/null)"
+        for a in $(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}'); do echo "address: $a"; done
+        echo "log in as: wisp (the password is in the image's README on the boot partition) or with keys from authorized_keys"
+        return 0
+    fi
+    echo "ssh: off"; return 3
+}
+case "${1:-}" in
+    on)     mkdir -p "$(dirname "$FLAG")" && : > "$FLAG" || { echo "wisp-ssh: cannot remember the setting" >&2; exit 1; }
+            "$SYSTEMCTL" start sshd.service || { echo "wisp-ssh: sshd did not start" >&2; exit 1; }; status ;;
+    off)    rm -f "$FLAG"; "$SYSTEMCTL" stop sshd.service; status; exit 0 ;;
+    toggle) if is_on; then exec "$0" off; else exec "$0" on; fi ;;
+    status) status ;;
+    *)      echo "usage: wisp-ssh on|off|toggle|status" >&2; exit 2 ;;
+esac

@@ -57,18 +57,23 @@ def rows(tree, extlinux_text):
     add('wisp_password', "the `wisp` account's password", "the publicly known default 'wisp'" if default_pw else ('none' if wisp in ('', '*', '!') else 'a custom hash'),
         "the operator's call (with SSH off by default it is only reachable on the console)", 'DECISION' if default_pw else 'OK')
     add('root_password', 'root has no password', 'none (key only)' if shadow.get('root') in ('*', '!', '!!') else 'a password is set', 'none (key only)', 'OK' if shadow.get('root') in ('*', '!', '!!') else 'DIFFERS')
+    unit = tree / 'usr/lib/systemd/system/sshd.service'
+    conditional = unit.exists() and 'ConditionPathExists=/storage/.config/wispos/ssh-enabled' in unit.read_text()
     sshd_on = enabled(tree, 'sshd.service')
-    add('sshd_enabled', 'sshd starts at boot', 'yes (%s)' % ', '.join(sshd_on) if sshd_on else 'no', 'off by default, with an on/off toggle in desktop mode (operator, 2026-10-11)', 'DIFFERS' if sshd_on else 'OK')
+    add('sshd_enabled', 'sshd starts at boot', 'only while the user turned it on (flag file; `wisp-ssh`)' if conditional else ('yes (%s)' % ', '.join(sshd_on) if sshd_on else 'no'),
+        'off by default, a persistent toggle (desktop mode), on by default on dev images (operator, 2026-10-11)', 'OK' if conditional or not sshd_on else 'DIFFERS')
     pa = sshd_directive(tree, 'PasswordAuthentication')
     add('ssh_password_auth', 'PasswordAuthentication while sshd is on', pa or 'not set', "the operator's call", 'DECISION' if pa == 'yes' else 'OK')
     prl = sshd_directive(tree, 'PermitRootLogin')
     add('ssh_root_login', 'PermitRootLogin', prl or 'not set (the default)', 'prohibit-password or no', 'OK' if prl in ('prohibit-password', 'no', 'without-password', None) else 'DIFFERS')
     append = re.search(r'^\s*APPEND\s+(.*)$', extlinux_text or '', re.M)
     args = append.group(1).split() if append else None
+    # ROCKNIX ships both on its release images (its reference extlinux.conf: `console=ttyS0,115200 console=tty0 systemd.debug_shell=ttyS0`) and anyone holding the card can edit
+    # extlinux.conf on a PC anyway, so WispOS follows the convention (operator, 2026-10-11): shown for information, never a gap.
     add('debug_shell_arg', 'systemd.debug_shell on the kernel command line', 'unknown (no extlinux.conf given)' if args is None else ('present' if any(a.startswith('systemd.debug_shell') for a in args) else 'absent'),
-        'absent on a release image', 'OK' if args is not None and not any(a.startswith('systemd.debug_shell') for a in args) else 'DIFFERS')
+        "ROCKNIX's convention: kept", 'OK')
     add('serial_console_arg', 'a serial console on the kernel command line', 'unknown (no extlinux.conf given)' if args is None else ('present' if any(a.startswith('console=ttyS') for a in args) else 'absent'),
-        'dev images only', 'OK' if args is not None and not any(a.startswith('console=ttyS') for a in args) else 'DIFFERS')
+        "ROCKNIX's convention: kept", 'OK')
     add('tty9_shell', 'an always-on root shell on tty9', 'enabled' if enabled(tree, 'debug-shell.service') else 'not enabled', 'not enabled', 'DIFFERS' if enabled(tree, 'debug-shell.service') else 'OK')
     left = []
     for u in ROCKNIX_UNITS:

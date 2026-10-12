@@ -6,6 +6,7 @@
 #   wifi.conf          two lines:  ssid=NETWORK NAME   and   psk=PASSPHRASE
 #                      becomes a NetworkManager profile (WPA2-PSK, DHCP), as ROCKNIX's wifictl makes
 #   authorized_keys    OpenSSH public keys allowed for root and for wisp
+#   ssh                an empty file: turn SSH on, ONCE (the Raspberry Pi convention). Development images carry it. After that the choice is the user's: `wisp-ssh off` persists
 CONF=/flash/wispos
 say() { echo "wisp-firstboot: $*" >/dev/kmsg 2>/dev/null; echo "wisp-firstboot: $*"; }
 
@@ -55,5 +56,9 @@ if [ -s "$CONF/authorized_keys" ]; then
     done
     chown -R wisp:wisp /storage/home/wisp/.ssh
     say "SSH keys installed for root and wisp"
+fi
+if [ -e "$CONF/ssh" ] && [ ! -e /storage/.config/wispos/ssh-seeded ]; then
+    mkdir -p /storage/.config/wispos && : > /storage/.config/wispos/ssh-enabled && : > /storage/.config/wispos/ssh-seeded
+    say "SSH turned on by the ssh file on the boot partition (first boot only)"
 fi
 exit 0

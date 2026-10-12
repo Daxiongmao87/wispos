@@ -98,14 +98,58 @@ class AccountTests(unittest.TestCase):
             self.assertEqual(shadow['wisp'], accounts.sha512_crypt('wisp'))
             self.assertEqual((etc / 'shadow').stat().st_mode & 0o777, 0o640)
 
-    def test_ssh_is_unconditional_and_allows_the_wisp_password_login(self):
+    def test_ssh_is_off_by_default_persistently_switchable_and_allows_the_wisp_password_login(self):
         unit = (HERE / 'rootfs/usr/lib/systemd/system/sshd.service').read_text()
-        self.assertNotIn('Condition', unit)                                    # always on
+        self.assertIn('ConditionPathExists=/storage/.config/wispos/ssh-enabled', unit)       # no flag, no sshd (operator, 2026-10-11)
+        self.assertIn('After=network.target wisp-firstboot.service', unit)                   # the first-boot seeding runs before the condition is evaluated
         self.assertIn('WantedBy=multi-user.target', unit)
         conf = (HERE / 'rootfs/etc/ssh/sshd_config.wisp').read_text()
         self.assertIn('PasswordAuthentication yes', conf)
         self.assertIn('PermitRootLogin prohibit-password', conf)               # root: keys only
         self.assertIn('d /storage/home/wisp 0700 wisp wisp', (HERE / 'rootfs/usr/lib/tmpfiles.d/wisp.conf').read_text())
+
+
+class SshSwitchTests(unittest.TestCase):
+    """wisp-ssh (the toggle the desktop-mode menu will call) and the `ssh` marker file on the boot partition."""
+    SCRIPT = HERE / 'rootfs/usr/bin/wisp-ssh'
+
+    def run_ssh(self, *args, fail_start=False):
+        root = Path(_tf.mkdtemp(prefix='wispos-ssh-', dir=_os.environ.get('TMPDIR')))
+        calls = root / 'calls'; fake = root / 'systemctl'
+        fake.write_text('#!/bin/sh\necho "$@" >> %s\n%s' % (calls, 'exit 1\n' if fail_start else 'exit 0\n')); fake.chmod(0o755)
+        flag = root / 'cfg/ssh-enabled'
+        run = lambda *a: _sp.run(['sh', str(self.SCRIPT), *a], capture_output=True, text=True, env={**_os.environ, 'WISP_SSH_FLAG': str(flag), 'WISP_SYSTEMCTL': str(fake)})
+        return root, flag, calls, run
+
+    def test_on_remembers_and_starts_off_forgets_and_stops_toggle_flips_status_reports(self):
+        root, flag, calls, run = self.run_ssh()
+        r = run('status'); self.assertEqual((r.returncode, r.stdout.strip()), (3, 'ssh: off')); self.assertFalse(flag.exists())
+        r = run('on'); self.assertEqual(r.returncode, 0, r.stderr); self.assertTrue(flag.exists()); self.assertIn('ssh: on', r.stdout); self.assertIn('start sshd.service', calls.read_text())
+        self.assertEqual(run('status').returncode, 0)
+        r = run('toggle'); self.assertFalse(flag.exists()); self.assertIn('stop sshd.service', calls.read_text()); self.assertIn('ssh: off', r.stdout)
+        run('toggle'); self.assertTrue(flag.exists())                                        # and back on
+        self.assertEqual(run('bogus').returncode, 2)
+
+    def test_a_failed_start_is_an_error_not_a_silent_success(self):
+        root, flag, calls, run = self.run_ssh(fail_start=True)
+        r = run('on'); self.assertEqual(r.returncode, 1); self.assertIn('did not start', r.stderr)
+
+    def test_the_ssh_file_on_the_boot_partition_seeds_the_setting_once_and_the_users_choice_then_persists(self):
+        helper = FirstBootTests()
+        root, out = helper.run_with({'ssh': ''})
+        flag, seeded = root / 'storage/.config/wispos/ssh-enabled', root / 'storage/.config/wispos/ssh-seeded'
+        self.assertTrue(flag.exists() and seeded.exists()); self.assertIn('SSH turned on', out.stdout)
+        flag.unlink()                                                                         # the user turns it off with wisp-ssh off ...
+        text = (root / 'run.sh').read_text()
+        _sp.run(['sh', str(root / 'run.sh')], capture_output=True, text=True)                 # ... and the next boot, marker still on the card, must NOT turn it back on
+        self.assertFalse(flag.exists())
+        root, out = helper.run_with({}); self.assertFalse((root / 'storage/.config/wispos/ssh-enabled').exists())      # no marker, no SSH
+
+    def test_development_images_carry_the_marker_and_release_images_do_not(self):
+        text = (HERE / 'build-image.sh').read_text()
+        dev_block = text[text.index('if [ "${WISP_DEV:-}" = 1 ]; then\n    printf \'DEVELOPMENT BUILD'):]
+        self.assertIn('wispos/ssh"', dev_block.split('fi\n', 1)[0])                          # inside the WISP_DEV branch
+        self.assertIn('SSH is OFF by default', text)
 
 
 import os as _os
@@ -1226,6 +1270,8 @@ class CheckReleaseTests(unittest.TestCase):
         (root / 'etc/shadow').write_text('root:*:1::::::\nwisp:%s:1::::::\n' % (accounts.sha512_crypt('wisp') if kw.get('default_pw', True) else '$6$x$y'))
         (root / 'etc/ssh/sshd_config').write_text('PasswordAuthentication %s\nPermitRootLogin prohibit-password\n' % kw.get('pa', 'yes'))
         (root / 'etc/os-release').write_text('NAME="WispOS"\nID="wispos"\n' if kw.get('wispos', True) else 'OS_NAME="ROCKNIX"\n')
+        (root / 'usr/lib/systemd/system').mkdir(parents=True, exist_ok=True)
+        (root / 'usr/lib/systemd/system/sshd.service').write_text('[Unit]\n' + ('ConditionPathExists=/storage/.config/wispos/ssh-enabled\n' if kw.get('sshd_conditional') else '') + '[Install]\nWantedBy=multi-user.target\n')
         if kw.get('sshd', True): (root / 'usr/lib/systemd/system/multi-user.target.wants/sshd.service').symlink_to('../sshd.service')
         if kw.get('autostart_input'): (root / 'usr/lib/autostart/common/098-deviceutils').write_text('nohup systemctl start input &\n')
         return root
@@ -1237,11 +1283,12 @@ class CheckReleaseTests(unittest.TestCase):
     def test_a_tree_with_todays_defaults_reports_the_known_gaps_and_the_decisions(self):
         r = self.rows(self.tree(), 'LABEL x\n  APPEND boot=LABEL=ROCKNIX console=ttyS0,115200 systemd.debug_shell=ttyS0\n')
         self.assertEqual({k: v['status'] for k, v in r.items() if k in ('wisp_password', 'ssh_password_auth')}, {'wisp_password': 'DECISION', 'ssh_password_auth': 'DECISION'})
-        for key in ('sshd_enabled', 'debug_shell_arg', 'serial_console_arg', 'update_source'): self.assertEqual(r[key]['status'], 'DIFFERS', key)
+        for key in ('sshd_enabled', 'update_source'): self.assertEqual(r[key]['status'], 'DIFFERS', key)
+        for key in ('debug_shell_arg', 'serial_console_arg'): self.assertEqual(r[key]['status'], 'OK', key)          # ROCKNIX's own convention, kept (operator, 2026-10-11)
         for key in ('root_password', 'ssh_root_login', 'tty9_shell', 'rocknix_units', 'os_release_identity'): self.assertEqual(r[key]['status'], 'OK', key)
 
     def test_a_tree_that_follows_the_proposal_has_no_differences(self):
-        root = self.tree(sshd=False, default_pw=False, pa='no'); (root / 'usr/share/wispos/update.conf').write_text('{}'); (root / 'usr/share/wispos/update-key.pub').write_text('k')
+        root = self.tree(sshd_conditional=True, default_pw=False, pa='no'); (root / 'usr/share/wispos/update.conf').write_text('{}'); (root / 'usr/share/wispos/update-key.pub').write_text('k')
         r = self.rows(root)
         self.assertEqual([k for k, v in r.items() if v['status'] != 'OK'], [])
 
@@ -1260,7 +1307,7 @@ class CheckReleaseTests(unittest.TestCase):
             self.assertEqual(check_release.main(['--tree', str(root), '--extlinux', '/nonexistent']), 0)                   # report mode never fails
             self.assertEqual(check_release.main(['--tree', str(root), '--extlinux', '/nonexistent', '--strict']), 1)
             self.assertEqual(check_release.main(['--tree', '/nonexistent']), 2)
-        r = self.rows(root, None); self.assertEqual(r['debug_shell_arg']['status'], 'DIFFERS'); self.assertIn('unknown', r['debug_shell_arg']['current'])
+        r = self.rows(root, None); self.assertEqual(r['debug_shell_arg']['status'], 'OK'); self.assertIn('unknown', r['debug_shell_arg']['current'])      # informational: never a gap, and an unknown file is said to be unknown
 
 
 if __name__ == '__main__':
