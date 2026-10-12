@@ -45,7 +45,7 @@ check "default target is wispos.target" "[ '$DEFAULT' = wispos.target ]"
 check "base services active (firstboot sshd seatd dbus NetworkManager iwd rocknix-autostart); sway needs a GPU the VM lacks" "[ '$ACTIVE' = ' 7 active;' ]"
 # The VM has no battery and no GPU: batteryplus cannot run, and sway cannot start, so wisp-setup (which needs sway) restarts every 3 s and is "failed" at some instants and "activating"
 # at others: a one-shot sample of `systemctl --failed` must not count the units that need a display. Anything ELSE failing is a finding.
-check "only display- and battery-less units failed (batteryplus, sway, wisp-setup: the VM has no battery and no GPU)" "[ -z '$(echo "$FAILED" | sed -e 's/batteryplus.service//' -e 's/wisp-setup.service//' -e 's/sway.service//' | tr -d ' ')' ]"
+check "only display- and battery-less units failed (batteryplus, sway, wisp-setup, wisp-bootscreen: the VM has no battery and no GPU)" "[ -z '$(echo "$FAILED" | sed -e 's/batteryplus.service//' -e 's/wisp-setup.service//' -e 's/wisp-bootscreen.service//' -e 's/sway.service//' | tr -d ' ')' ]"
 check "network came up by DHCP" "[ -n '$IP' ]"
 check "session unit is skipped, not failed, without a Steam runtime" "[[ '$SESSION' == *Result=success*ActiveState=inactive* ]]"
 check "storage holds the session directories (tmpfiles)" "as_root 'test -d /storage/wispos/logs && test -d /storage/home/wisp'"
@@ -60,6 +60,14 @@ check "SSH was seeded on by the boot partition's ssh file (first boot) and the u
     "as_root 'test -e /storage/.config/wispos/ssh-enabled && test -e /storage/.config/wispos/ssh-seeded && grep -q ConditionPathExists=/storage/.config/wispos/ssh-enabled /usr/lib/systemd/system/sshd.service'"
 SSH_STATUS=$(as_root 'wisp-ssh status'; echo "exit=$?"); echo "    wisp-ssh status -> $(echo "$SSH_STATUS" | tr '\n' '|')"      # captured whole: `grep -q` in a pipe closes it early and pipefail would fail the check
 check "wisp-ssh status reports on (exit 0) with the host name and an address" "[[ \"\$SSH_STATUS\" == *'ssh: on'* && \"\$SSH_STATUS\" == *'address: '* && \"\$SSH_STATUS\" == *'exit=0' ]]"
+# --- The USB-C port tool (docs/WISPOS-OS-DESIGN.md): this VM has no USB controller and its kernel has no host gate, so the tool must say so, refuse, and change nothing -------------
+USB_STATUS=$(as_root 'wisp-usb status'; echo "exit=$?")
+check "wisp-usb status: off, and neither host mode (no kernel gate) nor computer mode (no controller) is offered here" \
+    "[[ \"\$USB_STATUS\" == *'usb: off'* && \"\$USB_STATUS\" == *'host: unavailable: This kernel cannot keep the host role off'* && \"\$USB_STATUS\" == *'computer: unavailable: This device has no USB device controller'* && \"\$USB_STATUS\" == *'exit=0' ]]"
+USB_HOST_RC=$(as_root 'wisp-usb host >/dev/null 2>&1; echo $?'); USB_OFF_RC=$(as_root 'wisp-usb off >/dev/null 2>&1; echo $?')
+check "wisp-usb host refuses without the kernel gate (exit 4) and starts no watcher; wisp-usb off succeeds" \
+    "[ '$USB_HOST_RC' = 4 ] && [ '$USB_OFF_RC' = 0 ] && [ \"\$(as_root 'systemctl is-active wisp-usb-watch.service')\" != active ]"
+check "ROCKNIX's usbgadget and MTP daemon are gone (nothing else may switch the port role)" "! as_root 'ls /usr/bin/usbgadget /usr/sbin/umtprd /etc/umtprd'"
 # --- The SteamOS contract daemon, started by the buses (docs/WISPOS-STEAMOS-CONTRACT.md) -------------
 # Atomupd1 is asked for on the SYSTEM bus; nothing enables the unit, the bus activates it. SteamOSManager1 is asked for on Steam's SESSION bus: a throwaway session bus here.
 check "Atomupd1: the system bus starts wisp-steamos-manager and it answers with the image's own version" \
@@ -73,10 +81,14 @@ check "SteamOSManager1: the session bus starts the manager role inside the sessi
     "as_root 'dbus-run-session -- busctl --user get-property com.steampowered.SteamOSManager1 /com/steampowered/SteamOSManager1 com.steampowered.SteamOSManager1.Manager2 DeviceModel' | grep -q '^(ss)'"
 session_role_running() { as_root "ps w | grep -q -- '[-]-manager session'"; }     # the system-bus instance is the same program: tell them apart by the role on its command line
 check "that session-activated process ended with its session bus (nothing left behind)" "sleep 2; ! session_role_running"
-# --- The Steam UI's memory ceiling (wisp-ui-reclaim): installed but NOT enabled (the first A/B showed a ceiling alone makes the running UI thrash); it must start by hand on the real cgroup v2 ---
-check "wisp-ui-reclaim is installed and not enabled" "as_root 'test -x /usr/bin/wisp-ui-reclaim' && [ \"\$(as_root 'systemctl is-enabled wisp-ui-reclaim.service 2>&1')\" != enabled ]"
-check "started by hand it creates the UI cgroup with the idle ceiling (300 MiB) on the real kernel's cgroup v2" \
-    "as_root 'systemctl start wisp-ui-reclaim.service; sleep 2; cat /sys/fs/cgroup/unified/wisp-ui/memory.high' | grep -qx 314572800 && as_root 'systemctl stop wisp-ui-reclaim.service; cat /sys/fs/cgroup/unified/wisp-ui/memory.high' | grep -qx max"
+# --- The Steam UI's memory ceiling and freeze (wisp-ui-reclaim --freeze): enabled by default in the release image (0.1.0 plan); it must be running on the real cgroup v2, have created the UI
+# cgroup at the idle ceiling, lift the ceiling when stopped, and honour the off-switch file. (No sway here: it counts the UI as visible and keeps retrying, never freezing blind.) ---
+check "wisp-ui-reclaim is installed, enabled, running, and started with --freeze" \
+    "as_root 'test -x /usr/bin/wisp-ui-reclaim' && as_root 'systemctl show -p WantedBy wisp-ui-reclaim.service' | grep -q wispos.target && [ \"\$(as_root 'systemctl is-active wisp-ui-reclaim.service')\" = active ] && as_root 'systemctl show -p ExecStart wisp-ui-reclaim.service' | grep -q -- '--freeze'"
+check "it holds the UI cgroup at the idle ceiling (300 MiB) on the real kernel's cgroup v2 and lifts it when stopped, thawed" \
+    "as_root 'cat /sys/fs/cgroup/unified/wisp-ui/memory.high' | grep -qx 314572800 && as_root 'systemctl stop wisp-ui-reclaim.service; cat /sys/fs/cgroup/unified/wisp-ui/memory.high; cat /sys/fs/cgroup/unified/wisp-ui/cgroup.freeze' | tr '\n' ' ' | grep -q '^max 0 ' ; as_root 'systemctl start wisp-ui-reclaim.service'"
+check "the off-switch file keeps it from starting (and removing the file lets it)" \
+    "as_root 'systemctl stop wisp-ui-reclaim.service; touch /storage/.config/wispos/ui-reclaim-off; systemctl start wisp-ui-reclaim.service; systemctl is-active wisp-ui-reclaim.service; true' | grep -qx inactive && as_root 'rm /storage/.config/wispos/ui-reclaim-off; systemctl start wisp-ui-reclaim.service; systemctl is-active wisp-ui-reclaim.service' | grep -qx active"
 # --- Steam wrapper, end to end, with a stand-in client -------------------------------------------
 # The stand-in is a dynamic aarch64 program (it runs against the image's own libc) that executes a
 # real LSE instruction, LDADD, which the emulated Cortex-A53 rejects with SIGILL. If the preload that

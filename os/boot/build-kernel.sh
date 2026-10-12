@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build the WispOS kernel (Image, device trees, modules) from source using ROCKNIX's own H700
-# recipe: Linux 7.2, the 41 patches in the order ROCKNIX's scripts/unpack applies them, its
-# device trees, its .config, and its built-in firmware (Wi-Fi, Bluetooth, panels, regulatory db).
+# recipe: Linux 7.2, the 41 patches in the order ROCKNIX's scripts/unpack applies them, then WispOS's own
+# patches (os/boot/patches/*.patch), its device trees, its .config, and its built-in firmware (Wi-Fi,
+# Bluetooth, panels, regulatory db).
 #
 #   os/boot/build-kernel.sh [WORKDIR] [INITRAMFS_CPIO]
 #
@@ -14,6 +15,7 @@
 # git, rsync, openssl and libelf headers, depmod). Nothing is installed. Every tarball is hash-checked
 # against the pins in ROCKNIX's recipes, which are read from the pinned ROCKNIX checkout.
 set -euo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WORK=${1:-/mnt/hdd/wispos-staging/wispos-os-20261007}
 case "$WORK" in /mnt/hdd/*) ;; *) echo "work directory must be on the HDD" >&2; exit 2 ;; esac
 INITRAMFS=${2:-$(ls "$WORK"/ref-boot/ref.cpio.* 2>/dev/null | head -1)}
@@ -64,6 +66,14 @@ for p in "$LK"/patches/mainline/*.patch "$LK/patches/$KVER"/*.patch "$SRC/projec
     fi
     n=$((n+1))
 done
+# 1b. WispOS's own patches (os/boot/patches), after ROCKNIX's series so they see the tree it leaves.
+#     Each one says in its header why it exists. A patch that does not apply stops the build.
+for p in "$HERE"/patches/*.patch; do
+    [ -f "$p" ] || continue
+    echo "== $p" >>"$PLOG"
+    patch -d "$K" -p1 <"$p" >>"$PLOG" 2>&1
+    n=$((n+1))
+done
 echo "applied $n patches"
 rsync -a "$SRC/projects/ROCKNIX/devices/$DEV/linux/dts/" "$K/arch/arm64/boot/dts/"
 
@@ -86,8 +96,10 @@ FW_LIST="$(cd "$EF" && find panels rtl_bt rtw88 -type f | sort | xargs) regulato
 cp "$SRC/projects/ROCKNIX/devices/$DEV/linux/linux.aarch64.conf" "$K/.config"
 # A single `*.cpio.gz` is embedded as given (kbuild "avoid double compression"); gzip -n -9 is what
 # kbuild itself runs, and it reproduces ROCKNIX's embedded stream byte for byte.
-gzip -n -9 -c "$INITRAMFS" >"$BUILD/initramfs.cpio.gz"
-"$K/scripts/config" --file "$K/.config" --set-str CONFIG_INITRAMFS_SOURCE "$BUILD/initramfs.cpio.gz" \
+# The archive goes INTO the kernel tree and the option names it relatively (make runs in the tree): the kernel embeds its own .config (CONFIG_IKCONFIG), so an absolute path here would put
+# the name of the work directory into the Image and two builds in different directories would differ (found by os/repro-check.sh, 2026-10-12).
+gzip -n -9 -c "$INITRAMFS" >"$K/wispos-initramfs.cpio.gz"
+"$K/scripts/config" --file "$K/.config" --set-str CONFIG_INITRAMFS_SOURCE "wispos-initramfs.cpio.gz" \
     --set-str CONFIG_DEFAULT_HOSTNAME "WispOS" \
     --set-str CONFIG_EXTRA_FIRMWARE "$FW_LIST" --set-str CONFIG_EXTRA_FIRMWARE_DIR "external-firmware"
 

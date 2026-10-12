@@ -1,0 +1,21 @@
+# The desktop shell (os/dock/): the dock, the application menu, the quick settings, the on-screen keyboard and the toasts, as layer-shell surfaces on sway. Part of desktop mode: it starts after
+# wisp-desktop.service has set the compositor up and stops with it. Every program started from the dock lives in THIS unit's control group, so leaving desktop mode ends them with it.
+# Fail-safe: if the shell cannot stay up (four starts within a minute) the device falls back to Game mode rather than sit on a desktop with no way to do anything.
+[Unit]
+Description=WispOS desktop shell (dock, application menu, quick settings, keyboard)
+PartOf=wisp-desktop.service
+After=wisp-desktop.service wisp-pad.service sway.service
+Requires=sway.service
+StartLimitIntervalSec=60
+StartLimitBurst=4
+OnFailure=wisp-steam.service
+
+[Service]
+Environment=HOME=/storage/wispos/home XDG_RUNTIME_DIR=/var/run/0-runtime-dir WAYLAND_DISPLAY=wayland-1 SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
+Environment=XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=WispOS:sway MOZ_ENABLE_WAYLAND=1
+ExecStartPre=/usr/bin/mkdir -p /storage/wispos/home /storage/downloads
+ExecStart=/usr/bin/wisp-dock
+Restart=on-failure
+RestartSec=1
+KillMode=control-group
+TimeoutStopSec=8

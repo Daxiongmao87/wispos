@@ -103,7 +103,7 @@ class LaunchTests(Base):
 
     def test_a_manager_that_never_appears_does_not_block_the_command_for_more_than_a_few_seconds(self):
         rc, took = self.run_launch('go', NEVER='1')
-        self.assertEqual(rc, 0); self.assertLess(took, 8); self.assertGreaterEqual(took, 2.5)
+        self.assertEqual(rc, 0); self.assertLess(took, 8); self.assertGreaterEqual(took, 2.0)      # the script counts whole seconds, so "3 s" can be 2.0 to 3.0
         self.assertEqual(self.log.read_text().splitlines()[1], 'command go name_up=no')
 
     def test_a_missing_manager_binary_is_not_an_error(self):

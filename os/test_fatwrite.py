@@ -53,6 +53,38 @@ class FatWriteTests(unittest.TestCase):
                 self.assertTrue(got.exists(), f'{src.relative_to(tree)} missing after round trip')
                 self.assertEqual(hashlib.sha256(got.read_bytes()).hexdigest(), hashlib.sha256(src.read_bytes()).hexdigest(), src.name)
 
+    def test_directories_nest_to_any_depth_and_the_volume_stays_clean(self):
+        tree = Path(tempfile.mkdtemp(prefix='wispos-fat-src-'))
+        (tree / 'wispos/b').mkdir(parents=True); (tree / 'wispos/update/old/older').mkdir(parents=True)
+        (tree / 'wispos/b/KERNEL').write_bytes(os.urandom(1_234_567)); (tree / 'wispos/b/SYSTEM').write_bytes(os.urandom(3_000_001)); (tree / 'wispos/update/PENDING').write_text('slot=b\n')
+        (tree / 'wispos/update/old/older/deep.txt').write_text('deep'); (tree / 'wispos/README.txt').write_text('r' * 5000); (tree / 'KERNEL').write_bytes(b'k' * 100)
+        for i in range(60): (tree / 'wispos/update/old' / ('a-rather-long-file-name-number-%03d.txt' % i)).write_text(str(i))          # a directory whose entries need more than a few
+        work, image, offset = self.build(tree)
+        part = work / 'part.fat'
+        with open(image, 'rb') as f, open(part, 'wb') as g:
+            f.seek(offset); shutil.copyfileobj(f, g)
+        fsck = subprocess.run(['fsck.fat', '-n', '-v', str(part)], capture_output=True, text=True)
+        self.assertEqual(fsck.returncode, 0, fsck.stdout + fsck.stderr)
+        out = work / 'extract'
+        subprocess.run(['7z', 'x', '-y', f'-o{out}', str(part)], check=True, capture_output=True)
+        for src in tree.rglob('*'):
+            if src.is_file():
+                got = out / src.relative_to(tree)
+                self.assertTrue(got.exists(), f'{src.relative_to(tree)} missing after round trip')
+                self.assertEqual(got.read_bytes(), src.read_bytes(), str(src.relative_to(tree)))
+
+    def test_trees_of_one_level_are_laid_out_exactly_as_before_directories_could_nest(self):
+        # The release image is reproducible byte for byte: allowing deeper trees must not move anything in the trees the image builder makes. The hash is of the volume the writer
+        # produced BEFORE nesting was allowed (commit fc5c7e9), for this fixed tree and mkfs.fat's fixed volume id.
+        tree = Path(tempfile.mkdtemp(prefix='wispos-fat-src-')); (tree / 'extlinux').mkdir(); (tree / 'wispos').mkdir(); (tree / 'overlays').mkdir()
+        (tree / 'KERNEL').write_bytes(bytes(range(256)) * 300); (tree / 'SYSTEM').write_bytes(b'S' * 100_003); (tree / 'dtb.img').write_bytes(b'dtb'); (tree / 'empty').write_bytes(b'')
+        (tree / 'extlinux/extlinux.conf').write_text('DEFAULT a\nLABEL a\n  LINUX /KERNEL\n'); (tree / 'wispos/README.txt').write_text('readme ' * 400); (tree / 'overlays/x.dtbo').write_bytes(b'o' * 281)
+        work = Path(tempfile.mkdtemp(prefix='wispos-fat-')); image = work / 'ref.img'; offset = 16 << 20
+        with open(image, 'wb') as f: f.truncate(offset + 32 * (1 << 20))
+        subprocess.run(['mkfs.fat', '-F', '32', '-s', '8', '-n', 'ROCKNIX', '-i', '57495350', f'--offset={offset // 512}', str(image), str(32 * 1024)], check=True, capture_output=True)
+        fatwrite.populate(image, offset, tree)
+        self.assertEqual(hashlib.sha256(image.read_bytes()).hexdigest(), '1412b718e6bd16eacf7519c64953630eef1f99128ca9feeaa6f5bedf12e6f473')
+
     def test_long_names_get_lfn_entries_and_unique_short_aliases(self):
         self.assertEqual(fatwrite.short_name('KERNEL', set())[0], b'KERNEL     ')
         self.assertFalse(fatwrite.short_name('KERNEL', set())[1])

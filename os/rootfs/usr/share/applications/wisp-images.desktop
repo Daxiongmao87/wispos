@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Images
+Exec=swayimg
+Icon=wisp-images
+StartupWMClass=swayimg
+Categories=Graphics;Viewer;

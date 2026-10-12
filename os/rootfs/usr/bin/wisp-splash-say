@@ -1,16 +1,21 @@
 #!/bin/sh
-# WispOS: tell the boot splash (/usr/bin/wisp-splash in the initramfs, docs/WISPOS-SPLASH-DESIGN.md) what the boot is doing.
-#   wisp-splash-say "Starting the display"     the stage line
-#   wisp-splash-say --ready                    the next screen is up: the splash exits
-#   wisp-splash-say --fail "Display failed"    the red failure screen; the log opens by itself
-# The splash's FIFO is /dev/wisp-splash.fifo. It is opened read-write (1<>), which never blocks, so a unit calling this is never held up and never fails: with no splash
-# (a development image with wisp.splash=off, or after `ready`) the line is simply dropped.
-fifo=${WISP_SPLASH_FIFO:-/dev/wisp-splash.fifo}      # the override is for tests
-[ -p "$fifo" ] || exit 0
+# WispOS: tell the boot screens what the boot is doing (docs/WISPOS-SPLASH-DESIGN.md). Two screens follow each other: the splash in the initramfs (/usr/bin/wisp-splash, on the
+# framebuffer) until the compositor takes the display, then the Wayland boot screen (/usr/bin/wisp-bootscreen) until the first window appears.
+#   wisp-splash-say "Starting the display"     the stage line (both screens)
+#   wisp-splash-say --fail "Display failed"    the red failure screen; the log opens by itself (both screens)
+#   wisp-splash-say --ready                    the compositor accepts clients: the framebuffer splash exits (the Wayland boot screen sends this itself once its first frame is up)
+#   wisp-splash-say --done                     the real UI is up: the Wayland boot screen ends (it also ends by itself when any window appears)
+# A FIFO is opened read-write (1<>), which never blocks, so a unit calling this is never held up and never fails: with a screen absent (a development image with wisp.splash=off, or
+# a screen that has already ended) its line is simply dropped.
+fb=${WISP_SPLASH_FIFO:-/dev/wisp-splash.fifo}          # the overrides are for tests
+wl=${WISP_BOOTSCREEN_FIFO:-/run/wisp-bootscreen.fifo}
 case "${1:-}" in
-    --ready) cmd=ready ;;
-    --fail)  shift; cmd="fail $*" ;;
-    *)       cmd="status $*" ;;
+    --ready) cmd=ready; to="$fb" ;;
+    --done)  cmd=done; to="$wl" ;;
+    --fail)  shift; cmd="fail $*"; to="$fb $wl" ;;
+    *)       cmd="status $*"; to="$fb $wl" ;;
 esac
-printf '%s\n' "$cmd" 1<>"$fifo"
+for f in $to; do
+    [ -p "$f" ] && printf '%s\n' "$cmd" 1<>"$f"
+done
 exit 0

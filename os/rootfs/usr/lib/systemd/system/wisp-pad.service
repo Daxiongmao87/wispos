@@ -1,0 +1,13 @@
+# The handheld's controls as a pointer and a keyboard, for desktop mode only (os/pad/, docs/WISPOS-OS-DESIGN.md "Controls and the on-screen keyboard in desktop mode"). It grabs the pad and
+# presents a virtual mouse and keyboard, so while it runs nothing else sees the pad. That is the point of the lifetime below: wisp-desktop.service (the switch to desktop mode) pulls it
+# in and stops it again, so in Game mode Steam Input is the only thing that maps the pad ("controller mapping is Steam Input", operator 2026-10-09; desktop mode is the approved exception).
+# Not enabled by anything else; `systemctl start wisp-pad` by hand grabs the pad on any session, `wisp-pad --dry` reads it without touching anything.
+[Unit]
+Description=WispOS gamepad as pointer and keyboard (desktop mode)
+PartOf=wisp-desktop.service
+After=sway.service
+
+[Service]
+ExecStart=/usr/bin/wisp-pad
+Restart=on-failure
+RestartSec=2

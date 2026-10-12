@@ -1,0 +1,135 @@
+From: WispOS
+Subject: [PATCH] phy: sun4i-usb: make the OTG host role opt-in (host_enable) and never source VBUS into an external supply
+
+WispOS patch, applied by os/boot/build-kernel.sh after ROCKNIX's series (it builds on
+ROCKNIX's 0151 dual-route fixes). docs/WISPOS-OS-DESIGN.md, "USB-C: power and data together".
+
+1. host_enable (sysfs attribute of the PHY platform device, default 0 at every boot): while 0
+   the ID pin is read as high, so the port stays a peripheral and the usb0-vbus regulator is
+   never enabled, whatever is plugged in. Writing 1 lets the ID pin decide again (an OTG adapter
+   then makes the board a host and sources 5 V); writing 0 drops the host role and the 5 V.
+2. sun4i_usb_phy0_reroute(): on the SoCs with the dual route (this one) the regulator was
+   enabled as soon as the ID pin went low, without the "external vbus detected" test that
+   sun4i_usb_phy_power_on() applies on the other SoCs. The scan's "disable on external VBUS"
+   only runs when the regulator is already on, so a charger present before the adapter, or
+   arriving in the same scan, left the board driving into it. The test is added here.
+
+Read from the source and compiled; NOT yet exercised on the hardware (bench test T1-T4).
+---
+--- a/drivers/phy/allwinner/phy-sun4i-usb.c
++++ b/drivers/phy/allwinner/phy-sun4i-usb.c
+@@ -139,6 +139,7 @@
+ 	int id_det;
+ 	int vbus_det;
+ 	struct delayed_work detect;
++	bool host_enable;	/* WispOS: sysfs host_enable; the OTG host role is refused until userspace allows it */
+ };
+ 
+ #define to_sun4i_usb_phy_data(phy) \
+@@ -403,6 +404,13 @@
+ {
+ 	switch (data->dr_mode) {
+ 	case USB_DR_MODE_OTG:
++		/*
++		 * WispOS: the host role, and with it the board's own 5 V on VBUS, is opt-in. Until
++		 * userspace sets host_enable the ID pin is ignored and read as high (peripheral), so
++		 * an OTG adapter plugged in by mistake cannot make the board source VBUS.
++		 */
++		if (!READ_ONCE(data->host_enable))
++			return 1;
+ 		if (data->id_det_gpio)
+ 			return gpiod_get_value_cansleep(data->id_det_gpio);
+ 		else
+@@ -584,7 +592,8 @@
+ 	.owner		= THIS_MODULE,
+ };
+ 
+-static void sun4i_usb_phy0_reroute(struct sun4i_usb_phy_data *data, int id_det)
++static void sun4i_usb_phy0_reroute(struct sun4i_usb_phy_data *data, int id_det,
++				   int vbus_det)
+ {
+ 	struct phy *phy0 = data->phys[0].phy;
+ 	struct sun4i_usb_phy *phy;
+@@ -599,10 +608,20 @@
+ 		/* Host mode. Route phy0 to EHCI/OHCI */
+ 		regval &= ~OTGCTL_ROUTE_MUSB;
+ 
+-		/* Enable VBUS reg */
++		/*
++		 * Enable VBUS reg, unless something else already supplies VBUS (a charger, a
++		 * charging hub): our regulator would drive into it. sun4i_usb_phy_power_on() has
++		 * the same rule for the SoCs without the dual route, which return before it.
++		 */
+ 		if (phy->vbus && !phy->regulator_on) {
+-			regulator_enable(phy->vbus);
+-			phy->regulator_on = true;
++			if (sun4i_usb_phy0_have_vbus_det(data) && vbus_det) {
++				dev_warn(&phy0->dev,
++					 "External vbus detected, not enabling our own vbus\n");
++			} else if (regulator_enable(phy->vbus) == 0) {
++				phy->regulator_on = true;
++			} else {
++				dev_err(&phy0->dev, "Couldn't enable our own vbus\n");
++			}
+ 		}
+ 	} else {
+ 		/* Peripheral mode. Route phy0 to MUSB */
+@@ -691,7 +710,7 @@
+ 
+ 		/* Re-route PHY0 if necessary */
+ 		if (data->cfg->phy0_dual_route)
+-			sun4i_usb_phy0_reroute(data, id_det);
++			sun4i_usb_phy0_reroute(data, id_det, vbus_det);
+ 	}
+ 
+ 	if (vbus_notify)
+@@ -760,6 +779,41 @@
+ 	EXTCON_NONE,
+ };
+ 
++static ssize_t host_enable_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct sun4i_usb_phy_data *data = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", READ_ONCE(data->host_enable));
++}
++
++static ssize_t host_enable_store(struct device *dev,
++				 struct device_attribute *attr,
++				 const char *buf, size_t count)
++{
++	struct sun4i_usb_phy_data *data = dev_get_drvdata(dev);
++	bool val;
++	int ret;
++
++	ret = kstrtobool(buf, &val);
++	if (ret)
++		return ret;
++
++	WRITE_ONCE(data->host_enable, val);
++	dev_info(dev, "OTG host role %s\n", val ? "allowed" : "refused");
++	/* Read the ID pin again now: leaving host mode must drop our 5 V at once. */
++	mod_delayed_work(system_percpu_wq, &data->detect, 0);
++
++	return count;
++}
++static DEVICE_ATTR_RW(host_enable);
++
++static struct attribute *sun4i_usb_phy_attrs[] = {
++	&dev_attr_host_enable.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(sun4i_usb_phy);
++
+ static int sun4i_usb_phy_probe(struct platform_device *pdev)
+ {
+ 	struct sun4i_usb_phy_data *data;
+@@ -1085,6 +1139,7 @@
+ 	.driver = {
+ 		.of_match_table= sun4i_usb_phy_of_match,
+ 		.name = "sun4i-usb-phy",
++		.dev_groups = sun4i_usb_phy_groups,
+ 	}
+ };
+ module_platform_driver(sun4i_usb_phy_driver);

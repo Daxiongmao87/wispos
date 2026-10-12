@@ -1,0 +1,14 @@
+#!/bin/sh
+# wisp-about: what this device is running, in the terminal window the About entry opens (a screenful, then it waits).
+. /etc/os-release 2>/dev/null
+echo "${OS_NAME:-WispOS} ${WISPOS_VERSION:-}"
+[ -n "${BUILD_ID:-}" ] && echo "build:    $BUILD_ID"
+echo "kernel:   $(uname -sr) ($(uname -m))"
+echo "device:   $(tr -d '\0' </proc/device-tree/model 2>/dev/null)"
+echo "memory:   $(awk '/MemTotal/ {t=$2} /MemAvailable/ {a=$2} END {printf "%d MiB, %d MiB available", t/1024, a/1024}' /proc/meminfo)"
+echo "storage:  $(df -h /storage 2>/dev/null | awk 'NR==2 {print $3 " used of " $2 " (" $5 ")"}')"
+for a in $(ip -4 addr show 2>/dev/null | awk '$1 == "inet" {sub(/\/.*/, "", $2); print $2}' | grep -v '^127\.'); do echo "address:  $a"; done
+for b in /sys/class/power_supply/*/; do [ "$(cat "$b/type" 2>/dev/null)" = Battery ] && echo "battery:  $(cat "$b/capacity")% $(cat "$b/status")"; done
+echo
+printf 'Press Enter to close. '
+read -r _

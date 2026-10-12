@@ -6,6 +6,8 @@
  *                                                                                       DisableHttpProxy, which Steam calls at start and which is not in Valve's public file)
  *   com.steampowered.SteamOSManager1.Manager2       /com/steampowered/SteamOSManager1   DeviceModel, ReloadConfig
  *   com.steampowered.SteamOSManager1.CpuScaling1    /com/steampowered/SteamOSManager1   the cpufreq governors (sysfs, read live, written for every policy)
+ *   com.steampowered.SteamOSManager1.SessionManagement1  the same object                    "Switch to Desktop" and the way back: runs wisp-session-select (os/rootfs/usr/bin) and returns
+ *                                                                                       at once, because the switch ends the session this daemon runs in
  * Interface definitions are Valve's (the XML files in os/steamos/interfaces, MIT); os/test_steamos_manager.py checks this program's introspection against them member by member.
  *
  * Which bus each one is on was measured on the device (docs/WISPOS-NOTES.md, "Steam's SteamOS D-Bus calls"): Steam starts SteamOSManager1 by activation on its SESSION bus and calls
@@ -14,7 +16,7 @@
  *   wisp-steamos-manager --manager session     the manager interfaces (D-Bus activation inside Steam's session)
  * Either role may be given on either bus, and both on one bus (the tests do that on a private bus); at least one is required.
  * Environment (test seams and paths; every one has the production default): WISP_UPDATE_HELPER (/usr/lib/wispos/wisp-update), WISP_OS_RELEASE (/etc/os-release),
- * WISP_CPUFREQ_DIR (/sys/devices/system/cpu/cpufreq), WISP_DT_MODEL (/proc/device-tree/model).
+ * WISP_CPUFREQ_DIR (/sys/devices/system/cpu/cpufreq), WISP_DT_MODEL (/proc/device-tree/model), WISP_SESSION_SELECT (/usr/bin/wisp-session-select).
  *
  * The update work is done by a helper program, so the network, the hashes and the image writing live in one tested place and this daemon stays small (a few hundred KB resident):
  *   HELPER check          prints one line per update:   update ID VERSION VARIANT SIZE TYPE            (TYPE 0 minor, 1 major)
@@ -63,7 +65,7 @@ typedef struct {
 
 typedef struct {
     sd_event *event; sd_bus *atomupd_bus, *manager_bus;
-    const char *helper, *os_release, *cpufreq_dir, *dt_model;
+    const char *helper, *os_release, *cpufreq_dir, *dt_model, *session_select;
     uint32_t status; double progress; uint64_t eta;
     char *update_build_id, *failure_code, *failure_message, *current_version, *current_build_id, *variant;
     UpdateList avail, later;
@@ -397,6 +399,67 @@ static const sd_bus_vtable cpu_scaling_vtable[] = {
     SD_BUS_VTABLE_END
 };
 
+/* ---- SteamOSManager1: SessionManagement1 ---- */
+#define SESSION_NAME "wispos"                    /* the one desktop session there is */
+
+/* Run `session_select MODE` detached (two forks: it is nobody's child, and it outlives the session this daemon lives in); the method has returned by the time it acts. */
+static void session_run(Manager *m, const char *mode) {
+    pid_t p = fork();
+    if (p < 0) return;
+    if (p == 0) {
+        setsid();
+        if (fork() != 0) _exit(0);
+        int null = open("/dev/null", O_RDWR); if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); }
+        execl(m->session_select, m->session_select, mode, (char *)NULL);
+        _exit(127);
+    }
+    waitpid(p, NULL, 0);
+}
+
+static int session_to_desktop(sd_bus_message *msg, void *ud, sd_bus_error *e) { (void)e; session_run(ud, "desktop"); return sd_bus_reply_method_return(msg, NULL); }
+static int session_to_game(sd_bus_message *msg, void *ud, sd_bus_error *e) { (void)e; session_run(ud, "game"); return sd_bus_reply_method_return(msg, NULL); }
+
+static int session_to_login_mode(sd_bus_message *msg, void *ud, sd_bus_error *e) {
+    const char *type; int rc = sd_bus_message_read(msg, "s", &type); if (rc < 0) return rc;
+    if (strcmp(type, "game") != 0 && strcmp(type, "desktop") != 0) return sd_bus_error_set(e, "org.freedesktop.DBus.Error.InvalidArgs", "the login mode type must be game or desktop");
+    session_run(ud, type); return sd_bus_reply_method_return(msg, NULL);
+}
+
+static int session_to_desktop_session(sd_bus_message *msg, void *ud, sd_bus_error *e) {
+    const char *name; int rc = sd_bus_message_read(msg, "s", &name); if (rc < 0) return rc;
+    if (strcmp(name, SESSION_NAME) != 0) return sd_bus_error_set(e, "org.freedesktop.DBus.Error.InvalidArgs", "that is not one of ValidDesktopSessions");
+    session_run(ud, "desktop"); return sd_bus_reply_method_return(msg, NULL);
+}
+
+static int session_valid_sessions(sd_bus_message *msg, void *ud, sd_bus_error *e) { (void)ud; (void)e; return sd_bus_reply_method_return(msg, "as", 1, SESSION_NAME); }
+static int session_clean(sd_bus_message *msg, void *ud, sd_bus_error *e) { (void)ud; (void)e; return sd_bus_reply_method_return(msg, NULL); }       /* nothing is switched temporarily here */
+
+static int prop_default_session_get(sd_bus *b, const char *p, const char *i, const char *n, sd_bus_message *r, void *ud, sd_bus_error *e) { (void)b; (void)p; (void)i; (void)n; (void)ud; (void)e; return sd_bus_message_append(r, "s", SESSION_NAME); }
+static int prop_default_session_set(sd_bus *b, const char *p, const char *i, const char *n, sd_bus_message *v, void *ud, sd_bus_error *e) {
+    (void)b; (void)p; (void)i; (void)n; (void)ud; const char *want; int rc = sd_bus_message_read(v, "s", &want); if (rc < 0) return rc;
+    return strcmp(want, SESSION_NAME) == 0 ? 1 : sd_bus_error_set(e, "org.freedesktop.DBus.Error.InvalidArgs", "that is not one of ValidDesktopSessions");
+}
+static int prop_login_mode_get(sd_bus *b, const char *p, const char *i, const char *n, sd_bus_message *r, void *ud, sd_bus_error *e) { (void)b; (void)p; (void)i; (void)n; (void)ud; (void)e; return sd_bus_message_append(r, "s", "game"); }
+static int prop_login_mode_set(sd_bus *b, const char *p, const char *i, const char *n, sd_bus_message *v, void *ud, sd_bus_error *e) {
+    (void)b; (void)p; (void)i; (void)n; (void)ud; const char *want; int rc = sd_bus_message_read(v, "s", &want); if (rc < 0) return rc;
+    if (!strcmp(want, "game")) return 1;
+    if (!strcmp(want, "desktop")) return sd_bus_error_set(e, "org.freedesktop.DBus.Error.NotSupported", "starting in desktop mode is not available yet: the device always starts in game mode");
+    return sd_bus_error_set(e, "org.freedesktop.DBus.Error.InvalidArgs", "the login mode must be game or desktop");
+}
+
+static const sd_bus_vtable session_vtable[] = {
+    SD_BUS_VTABLE_START(0),
+    SD_BUS_METHOD("SwitchToDesktopMode", NULL, NULL, session_to_desktop, 0),
+    SD_BUS_METHOD("SwitchToGameMode", NULL, NULL, session_to_game, 0),
+    SD_BUS_METHOD_WITH_ARGS("SwitchToLoginMode", SD_BUS_ARGS("s", type), SD_BUS_NO_RESULT, session_to_login_mode, 0),
+    SD_BUS_METHOD_WITH_ARGS("SwitchToDesktopSession", SD_BUS_ARGS("s", sessions), SD_BUS_NO_RESULT, session_to_desktop_session, 0),
+    SD_BUS_WRITABLE_PROPERTY("DefaultDesktopSession", "s", prop_default_session_get, prop_default_session_set, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+    SD_BUS_WRITABLE_PROPERTY("DefaultLoginMode", "s", prop_login_mode_get, prop_login_mode_set, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+    SD_BUS_METHOD_WITH_ARGS("ValidDesktopSessions", SD_BUS_NO_ARGS, SD_BUS_RESULT("as", sessions), session_valid_sessions, 0),
+    SD_BUS_METHOD("CleanTemporarySessions", NULL, NULL, session_clean, 0),
+    SD_BUS_VTABLE_END
+};
+
 /* ---- start-up ---- */
 static int open_bus(const char *which, sd_bus **out) { return !strcmp(which, "session") ? sd_bus_open_user(out) : sd_bus_open_system(out); }
 
@@ -414,6 +477,7 @@ int main(int argc, char **argv) {
     m.os_release = getenv("WISP_OS_RELEASE") ? getenv("WISP_OS_RELEASE") : "/etc/os-release";
     m.cpufreq_dir = getenv("WISP_CPUFREQ_DIR") ? getenv("WISP_CPUFREQ_DIR") : "/sys/devices/system/cpu/cpufreq";
     m.dt_model = getenv("WISP_DT_MODEL") ? getenv("WISP_DT_MODEL") : "/proc/device-tree/model";
+    m.session_select = getenv("WISP_SESSION_SELECT") ? getenv("WISP_SESSION_SELECT") : "/usr/bin/wisp-session-select";
     load_identity(&m); set_str(&m.variant, KNOWN_VARIANT); set_str(&m.update_build_id, ""); set_str(&m.failure_code, ""); set_str(&m.failure_message, "");
     signal(SIGPIPE, SIG_IGN);
 
@@ -435,6 +499,7 @@ int main(int argc, char **argv) {
     if (m.atomupd_bus) STEP("Atomupd1 object", sd_bus_add_object_vtable(m.atomupd_bus, NULL, ATOMUPD_PATH, "com.steampowered.Atomupd1", atomupd_vtable, &m));
     if (m.manager_bus) STEP("Manager2 object", sd_bus_add_object_vtable(m.manager_bus, NULL, MANAGER_PATH, "com.steampowered.SteamOSManager1.Manager2", manager2_vtable, &m));
     if (m.manager_bus) STEP("CpuScaling1 object", sd_bus_add_object_vtable(m.manager_bus, NULL, MANAGER_PATH, "com.steampowered.SteamOSManager1.CpuScaling1", cpu_scaling_vtable, &m));
+    if (m.manager_bus) STEP("SessionManagement1 object", sd_bus_add_object_vtable(m.manager_bus, NULL, MANAGER_PATH, "com.steampowered.SteamOSManager1.SessionManagement1", session_vtable, &m));
     if (m.atomupd_bus) STEP("name " ATOMUPD_NAME, sd_bus_request_name(m.atomupd_bus, ATOMUPD_NAME, 0));
     if (m.manager_bus) STEP("name " MANAGER_NAME, sd_bus_request_name(m.manager_bus, MANAGER_NAME, 0));
 #undef STEP

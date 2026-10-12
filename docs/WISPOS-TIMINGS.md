@@ -78,6 +78,19 @@ Device clock is UTC, the host's is UTC-4. All rows are measured unless marked "e
 | Test kernel with the patched initramfs and the virtual GPU driver (`make -j28 Image`) | **a few minutes** (not timed to the second) | 33.8 MB Image | 1, 2026-10-11 |
 | H700 kernel build with the patched initramfs (`os/boot/build-kernel.sh`, from the pinned sources, 28 cores) | **475 s** (7 min 55 s) | Image 33.7 MB; the embedded initramfs is byte-identical to the patched cpio | 1, 2026-10-11 |
 | `qemu-test.sh`, 27 checks (userspace boot of the release SYSTEM under TCG, incl. the bus-activation checks) | **about 9 min 30 s** | splash test kernel, port 2232 | 3, 2026-10-11 |
+| H700 kernel build with the WispOS patch (`os/boot/build-kernel.sh $W $W/build/wispos-initramfs.cpio`, 42 patches, 32 cores) | **475 s** | the same time as the build without the patch; Image 33.7 MB | 4, 2026-10-12 |
+| Rebuild chain after a kernel change: rootfs release, rootfs dev, both images, both `verify_image.py` | **104 s, 99 s, 9 s, 8 s, 11 s, 16 s** | whole chain with the kernel and the initramfs: about 12 min | 4, 2026-10-12 |
+| `qemu-test.sh`, 32 checks (adds the USB fail-closed checks) | **about 9 min 20 s** | port 2232 | 4, 2026-10-12 |
+| `test_wisp_usb` (41), `test_rootfs` (92) | **2.4 s**, **1.5 s** | the reclaim tests (`test_ui_reclaim`) fail one timing check when the host load average is above 40 (a kernel build running): rerun when quiet | 4, 2026-10-12 |
+| `os/build-all.sh` (bootloader 32 s, typeface 0 s, initramfs 1 s, kernel 395-459 s, SYSTEM release 93-100 s, dev 105-110 s, images 8+10 s, checks 22 s), whole chain | **11 min 28 s** to **12 min 18 s** | 32 cores; the first run 12m18, the third 11m28 | 7, 2026-10-12 |
+| `os/qemu-update-test.sh` (7 scenarios in parallel, real U-Boot code, incl. rollback, nosystemd, badkernel, 3 power cuts) | **6 min 2 s** | prepare about 100 s; port base 2240 | 7, 2026-10-12 |
+| `qemu-test.sh`, 34 checks, run ALONE | **9 min 18 s** | beside the update test's 7 VMs it never got SSH in 15 min: run it alone; set `WISP_QEMU_SSH_PORT=2232` (2222 is held on this host) | 7, 2026-10-12 |
+| `os/run-tests.py -j 6 --serial-rerun`, 53 files | **643 s** (10 min 43 s) | while a build is running the timing-sensitive tests can fail once | 7, 2026-10-12 |
+| `test_wisp_update.py` (66 tests) incl. 27 mutants | **about 6 min 30 s** (the mutants alone 5 min 2 s) | | 7, 2026-10-12 |
+| `test_boot_slots.py` Mutants (29 mutants of the initramfs step) / the scenarios in 3 shells (93) | **46 s** / **38 s** | | 7, 2026-10-12 |
+| `test_uboot_trial.py`: 14 tests, 15 mutants, in U-Boot's own interpreter | **30 s** | needs the sandbox build (`os/boot/build-uboot-sandbox.sh`, a few minutes once) | 7, 2026-10-12 |
+| `os/dev/test-release.sh` (restamp the SYSTEM, sign, no serving) | **28 s** | | 7, 2026-10-12 |
+| `test_bootscreen.py` / its mutants; `test_setup_render.py` | **255 s** (whole file) / **23 s** | | 7, 2026-10-12 |
 | Quake III timedemo run through `perf-sweep.sh` (settle, launch, 1260 frames, teardown) | **about 8 min per run** | six runs back to back plus settles: 50 min | 6, 2026-10-11 |
 
 ## Not measured yet (estimate or unknown)

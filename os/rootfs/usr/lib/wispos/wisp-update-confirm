@@ -1,0 +1,55 @@
+#!/bin/sh
+# wisp-update-confirm: ends the trial of a freshly updated system once it has started well (docs/WISPOS-UPDATE-DESIGN.md, "Boot slots").
+# An update is switched to on trial: the initramfs counts the starts of the new slot and goes back to the previous one when the new version never confirms itself. This is what
+# confirms it. "Started well" is deliberately modest and independent of what the update changed: the compositor AND one session program (Steam, the first-run setup, or the desktop)
+# have been active together, without a gap, for HOLD seconds (a session program that dies and restarts, or a compositor that never comes up, resets the count). It then runs
+# `wisp-update confirm`, which deletes the trial marker. A system whose Steam window never maps is NOT caught here (that failure exists without any update and has its own
+# watchdog); this guards against a version that does not come up at all.
+# A system that does NOT get healthy within LIMIT seconds (default 600) is restarted (systemctl --force reboot, else reboot -f): its start has been counted by the initramfs, so
+# after the allowed starts the card goes back to the previous version without anyone touching the handheld (a black screen that nobody can fix by waiting). A system whose init
+# or kernel is wedged cannot run this; the initramfs covers what stops before the real init (os/boot/wisp-boot.sh), the kernel command line's panic= a kernel panic.
+# Started by wisp-update-confirm.service only when the marker exists, so an ordinary boot never runs it.
+# Test seams: WISP_CONFIRM_HOLD (90 s), WISP_CONFIRM_POLL (5 s), WISP_CONFIRM_NEED (polls in a row; default HOLD/POLL rounded up), WISP_CONFIRM_CORE (sway.service),
+# WISP_CONFIRM_SESSIONS, WISP_SYSTEMCTL, WISP_UPDATE_HELPER, WISP_PENDING, WISP_CONFIRM_LIMIT (600 s), WISP_CONFIRM_LIMIT_POLLS (polls before the restart; default LIMIT/POLL
+# rounded up), WISP_REBOOT (reboot).
+HOLD=${WISP_CONFIRM_HOLD:-90}
+POLL=${WISP_CONFIRM_POLL:-5}
+CORE=${WISP_CONFIRM_CORE:-sway.service}
+SESSIONS=${WISP_CONFIRM_SESSIONS:-wisp-steam.service wisp-setup.service wisp-desktop.service}
+SYSTEMCTL=${WISP_SYSTEMCTL:-systemctl}
+HELPER=${WISP_UPDATE_HELPER:-/usr/lib/wispos/wisp-update}
+PENDING=${WISP_PENDING:-/flash/wispos/update/PENDING}
+LIMIT=${WISP_CONFIRM_LIMIT:-600}
+REBOOT=${WISP_REBOOT:-reboot}
+
+healthy() {
+    for unit in $CORE; do "$SYSTEMCTL" is-active --quiet "$unit" || return 1; done
+    for unit in $SESSIONS; do "$SYSTEMCTL" is-active --quiet "$unit" && return 0; done
+    return 1
+}
+
+if [ -n "$WISP_CONFIRM_NEED" ]; then need=$WISP_CONFIRM_NEED; else need=$(( (HOLD + POLL - 1) / POLL )); fi
+[ "$need" -ge 1 ] || need=1
+if [ -n "$WISP_CONFIRM_LIMIT_POLLS" ]; then limit=$WISP_CONFIRM_LIMIT_POLLS; else limit=$(( (LIMIT + POLL - 1) / POLL )); fi
+[ "$limit" -gt "$need" ] || limit=$((need + 1))                          # the limit can never be shorter than the hold it must allow for
+streak=0; polls=0
+while [ -e "$PENDING" ]; do
+    if healthy; then streak=$((streak + 1)); else streak=0; fi
+    if [ "$streak" -ge "$need" ]; then
+        tries=0
+        until "$HELPER" confirm; do                      # a busy card, or the boot partition not writable for a moment: try again, a few times
+            tries=$((tries + 1)); [ "$tries" -lt 5 ] || { echo "wisp-update-confirm: could not end the trial" >&2; exit 1; }
+            sleep "$POLL"
+        done
+        exit 0
+    fi
+    polls=$((polls + 1))
+    if [ "$polls" -ge "$limit" ]; then
+        echo "wisp-update-confirm: this version has not come up well in $LIMIT seconds: restarting (the card goes back to the previous version after the allowed starts)" >&2
+        echo "wispos: update trial: not healthy in $LIMIT s, restarting" >/dev/kmsg 2>/dev/null
+        "$SYSTEMCTL" --force reboot || "$REBOOT" -f
+        exit 1
+    fi
+    sleep "$POLL"
+done
+exit 0                                                   # no trial (any more): nothing to do

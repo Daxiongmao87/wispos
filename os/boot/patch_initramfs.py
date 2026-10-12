@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Patch ROCKNIX's reference initramfs (a newc cpio) for the WispOS boot splash: replace ONE entry and add ONE, nothing else (docs/WISPOS-SPLASH-DESIGN.md).
+"""Patch ROCKNIX's reference initramfs (a newc cpio) for WispOS: the boot splash (docs/WISPOS-SPLASH-DESIGN.md) and the boot slots of the update scheme
+(docs/WISPOS-UPDATE-DESIGN.md). Two entries replaced or edited, two added, nothing else:
   usr/bin/rocknix-splash  -> our wrapper script (ROCKNIX's init runs it synchronously and carries on; the wrapper starts wisp-splash detached)
   usr/bin/wisp-splash     -> new, the static splash binary
-usage: patch_initramfs.py REF_CPIO OUT_CPIO WRAPPER_SCRIPT SPLASH_BINARY
+  wisp-boot               -> new, os/boot/wisp-boot.sh: the functions of the slot step
+  init                    -> ROCKNIX's init with exactly two lines added: `. /wisp-boot` after the line that sources /device.init, and the step `wisp_slot` after `cleanup_flash`
+                             in the list of boot steps (after the boot partition is mounted, before the system image is). Each anchor must occur exactly once or the patch refuses.
+usage: patch_initramfs.py REF_CPIO OUT_CPIO WRAPPER_SCRIPT SPLASH_BINARY BOOT_SCRIPT
 `read_cpio` / `write_cpio` are exact: writing back what was read reproduces the archive byte for byte (the test proves it on the real reference), so a patched archive
-differs from the reference in those two entries and in nothing else. Pure stdlib."""
+differs from the reference in those entries and in nothing else. Pure stdlib."""
 import sys
 
 MAGIC = b'070701'
@@ -47,29 +51,49 @@ def write_cpio(entries, tail):
     return b''.join(entry_bytes(e) for e in entries + [trailer]) + tail
 
 
-def patch(data, wrapper, binary, mtime=None):
+SOURCE_ANCHOR = b'. /device.init 2>/dev/null\n'            # the init sources its helper files here; ours goes right behind
+SOURCE_LINE = b'. /wisp-boot 2>/dev/null\n'
+STEP_ANCHOR = b'    cleanup_flash \\\n'                      # in `for BOOT_STEP in \ ... do`: the boot partition is mounted, the system image is not yet
+STEP_LINE = b'    wisp_slot \\\n'
+
+
+def patch_init(init):
+    """ROCKNIX's init with the two WispOS lines added; refuses an init that does not have each anchor exactly once (an unknown init is never edited blindly)."""
+    for anchor in (SOURCE_ANCHOR, STEP_ANCHOR):
+        if init.count(anchor) != 1: raise ValueError('the init does not have the anchor %r exactly once (found %d)' % (anchor.decode(), init.count(anchor)))
+    return init.replace(SOURCE_ANCHOR, SOURCE_ANCHOR + SOURCE_LINE).replace(STEP_ANCHOR, STEP_ANCHOR + STEP_LINE)
+
+
+def patch(data, wrapper, binary, boot_script, mtime=None):
     entries, tail = read_cpio(data)
     names = [e['name'] for e in entries]
-    if 'usr/bin/rocknix-splash' not in names: raise ValueError('the reference has no usr/bin/rocknix-splash')
-    if 'usr/bin/wisp-splash' in names: raise ValueError('already patched')
+    for needed in ('usr/bin/rocknix-splash', 'init', 'device.init'):
+        if needed not in names: raise ValueError('the reference has no %s' % needed)
+    if 'usr/bin/wisp-splash' in names or 'wisp-boot' in names: raise ValueError('already patched')
     i = names.index('usr/bin/rocknix-splash')
     old = entries[i]
     new_inode = max(e['ino'] for e in entries) + 1
     when = old['mtime'] if mtime is None else mtime
     entries[i] = dict(old, data=wrapper, mode=S_IFREG | 0o755, nlink=1, check=0)
     entries.insert(i + 1, dict(old, ino=new_inode, name='usr/bin/wisp-splash', data=binary, mode=S_IFREG | 0o755, nlink=1, mtime=when, check=0))
+    j = names.index('init')
+    entries[j] = dict(entries[j], data=patch_init(entries[j]['data']))
+    k = [e['name'] for e in entries].index('device.init')
+    dev = entries[k]
+    entries.insert(k + 1, dict(dev, ino=new_inode + 1, name='wisp-boot', data=boot_script, mode=S_IFREG | 0o644, nlink=1, mtime=dev['mtime'] if mtime is None else mtime, check=0))
     return write_cpio(entries, tail)
 
 
 def main(argv):
-    if len(argv) != 4: sys.exit(__doc__)
-    ref, out, wrapper, binary = argv
+    if len(argv) != 5: sys.exit(__doc__)
+    ref, out, wrapper, binary, boot = argv
     with open(ref, 'rb') as f: data = f.read()
     with open(wrapper, 'rb') as f: w = f.read()
     with open(binary, 'rb') as f: b = f.read()
-    patched = patch(data, w, b)
+    with open(boot, 'rb') as f: g = f.read()
+    patched = patch(data, w, b, g)
     with open(out, 'wb') as f: f.write(patched)
-    print('wrote %s: %d bytes (reference %d, wrapper %d, splash %d)' % (out, len(patched), len(data), len(w), len(b)))
+    print('wrote %s: %d bytes (reference %d, wrapper %d, splash %d, boot script %d)' % (out, len(patched), len(data), len(w), len(b), len(g)))
 
 
 if __name__ == '__main__':

@@ -126,7 +126,7 @@ BOOT_CONTRACT = [
     'usr/sbin/sshd', 'usr/bin/ssh-keygen', 'usr/bin/sway', 'usr/bin/seatd', 'usr/bin/dbus-run-session',
     'usr/lib/systemd/system/wispos.target', 'usr/lib/systemd/system/wisp-steam.service',
     'usr/lib/systemd/system/sshd.service', 'usr/lib/systemd/system/sway.service', 'usr/bin/wisp-steam-session', 'usr/bin/wisp-display', 'usr/bin/wisp-screen', 'usr/bin/wisp-screen-idle', 'usr/bin/wisp-steam-seed', 'usr/bin/wisp-steam-watch', 'usr/lib/systemd/system/wisp-steam-watch.service', 'usr/bin/wisp-proton-patch', 'usr/bin/steamos-polkit-helpers/steamos-format-sdcard', 'usr/bin/steamos-polkit-helpers/steamos-format-device', 'usr/lib/wispos/tf2-card', 'usr/bin/wisp-compat-gate', 'usr/bin/wisp-fex-official', 'usr/bin/wisp-wow64-valve', 'usr/lib/systemd/system/wisp-wow64-valve.path', 'usr/lib/systemd/system/wisp-wow64-valve.service', 'usr/share/wispos/valve-wow64.lock.json', 'usr/share/wispos/fex-official/official-fex.lock.json', 'usr/lib/udev/rules.d/98-wisp-tf2.rules', 'usr/lib/systemd/system/wisp-tf2-mount.service', 'usr/lib/systemd/system/wisp-tf2-umount.service', 'usr/lib/systemd/system/wisp-screen-idle.service',
-    'usr/bin/wisp-setup', 'usr/bin/wisp-steamos-manager', 'usr/bin/wisp-steam-launch', 'usr/bin/steamos-polkit-helpers/steamos-update', 'usr/bin/wisp-ui-reclaim', 'usr/lib/systemd/system/wisp-ui-reclaim.service', 'usr/lib/wispos/wisp-update', 'usr/lib/systemd/system/wisp-steamos-manager.service', 'usr/share/dbus-1/system-services/com.steampowered.Atomupd1.service', 'usr/share/dbus-1/services/com.steampowered.SteamOSManager1.service', 'usr/share/dbus-1/system.d/com.steampowered.Atomupd1.conf', 'usr/lib/wispos/steam-install', 'usr/lib/wispos/native_client.py', 'usr/share/wispos/native-client.lock.json', 'usr/share/wispos/compat-tool.lock.json',
+    'usr/bin/wisp-setup', 'usr/bin/wisp-steamos-manager', 'usr/bin/wisp-steam-launch', 'usr/bin/steamos-polkit-helpers/steamos-update', 'usr/bin/wisp-ui-reclaim', 'usr/lib/systemd/system/wisp-ui-reclaim.service', 'usr/bin/wisp-pad', 'usr/lib/systemd/system/wisp-pad.service', 'usr/bin/wisp-dock', 'usr/lib/systemd/system/wisp-dock.service', 'usr/lib/systemd/system/wisp-desktop.service', 'usr/lib/wispos/wisp-desktop-session', 'usr/bin/wisp-session-select', 'usr/bin/steamos-session-select', 'usr/bin/wisp-about', 'usr/bin/wisp-browser', 'usr/bin/wisp-download-action', 'usr/share/wispos/browser.lock.json', 'usr/lib/wispos/browser-policies.json', 'usr/lib/wispos/browser-user.js', 'usr/share/wispos/startpage/index.html', 'usr/share/wispos/wallpaper.png', 'usr/share/applications/wisp-terminal.desktop', 'usr/bin/wisp-usb', 'usr/lib/systemd/system/wisp-usb-watch.service', 'usr/lib/wispos/wisp-update', 'usr/lib/wispos/wisp-update-confirm', 'usr/bin/wisp-bootscreen', 'usr/lib/systemd/system/wisp-bootscreen.service', 'usr/lib/systemd/system/wisp-update-confirm.service', 'usr/bin/steamos-polkit-helpers/steamos-reboot', 'usr/lib/systemd/system/wisp-steamos-manager.service', 'usr/share/dbus-1/system-services/com.steampowered.Atomupd1.service', 'usr/share/dbus-1/services/com.steampowered.SteamOSManager1.service', 'usr/share/dbus-1/system.d/com.steampowered.Atomupd1.conf', 'usr/lib/wispos/steam-install', 'usr/lib/wispos/native_client.py', 'usr/share/wispos/native-client.lock.json', 'usr/share/wispos/compat-tool.lock.json',
     'usr/lib/wispos/lib/libibus-1.0.so.5', 'usr/lib/wispos/lib/libva.so.2', 'usr/lib/wispos/lib/libvdpau.so.1', 'usr/lib/wispos/lib/libssh2.so.1', 'usr/lib/wispos/lib/libbrotlidec.so.1', 'usr/lib/wispos/lib/libbrotlicommon.so.1', 'usr/lib/wispos/lib/libasyncns.so.0', 'usr/share/sway/config', 'usr/share/wispos/wispos-badge.png', 'usr/lib/systemd/system/wisp-setup.service',
     'usr/lib/wispos/libwispos-ldadd.so', 'usr/lib/wispos/libwispos-ldadd.sha256', 'usr/bin/wisp-bootlog', 'usr/bin/wisp-firstboot', 'usr/bin/wisp-splash-say', 'usr/lib/systemd/system/sway.service.d/10-wisp-splash.conf', 'usr/lib/systemd/system/wisp-bootlog.timer',
     'usr/bin/autostart', 'usr/lib/systemd/system/rocknix-autostart.service', 'usr/lib/autostart/common/050-audio',
@@ -141,8 +141,17 @@ FORBIDDEN = [
 ]
 
 
+# Our own programs and settings live here; the image's Python writes no bytecode on a read-only system, so a __pycache__ in these directories is the HOST's, copied in by mistake.
+OWN_DIRS = ['usr/bin', 'usr/sbin', 'usr/lib/wispos', 'usr/share/wispos', 'etc']
+
+
+def stray_bytecode(tree):
+    return sorted(str(p.relative_to(tree)) for d in OWN_DIRS if (tree / d).is_dir() for p in (tree / d).rglob('__pycache__'))
+
+
 def contract_report(tree, release='7.2.0'):
     missing = [p for p in BOOT_CONTRACT if not (tree / p).exists()]
+    missing += [f'MUST NOT CONTAIN {p} (host Python bytecode)' for p in stray_bytecode(tree)]
     base = tree / 'usr/lib/kernel-overlays/base/lib'
     for rel in (f'modules/{release}/modules.dep', f'modules/{release}/modules.alias', 'firmware/regulatory.db'):
         if not (base / rel).exists():

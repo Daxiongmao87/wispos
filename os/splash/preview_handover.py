@@ -32,12 +32,32 @@ def boot_frame(binary, workdir, n):
     return Image.frombuffer('RGBA', (W, H), fb.read_bytes(), 'raw', 'BGRA', 0, 1).convert('RGB')
 
 
+def levels(t):
+    """(ground factor, boot opacity, setup opacity) at t in 0..1: the contract's three curves."""
+    return smooth(t), 1 - smooth(t / 0.5), smooth((t - 0.5) / 0.5)
+
+
+def mix_arrays(boot, setup, t):
+    """The contract in 8-bit arithmetic, on (H, W, 3) uint8 arrays: ground + boot * a_boot + (setup - navy) * a_setup, each term truncated toward zero like int(v * a) and the sum
+    clipped to 0..255. The setup layer is the SIGNED difference from the navy ground, so an element darker than the ground fades in too and the last frame IS the setup screen
+    (os/setup/handover.h does the same arithmetic in C; os/test_setup.py proves the two agree bit for bit)."""
+    import numpy as np
+    g, ab, as_ = levels(t)
+    navy = np.array(NAVY, dtype=np.int32)
+    ground = (navy * g).astype(np.int32)                                              # astype truncates toward zero
+    b = (np.asarray(boot, dtype=np.int32) * ab).astype(np.int32)
+    d = (np.asarray(setup, dtype=np.int32) - navy)
+    s = (d * as_).astype(np.int32)
+    return np.clip(ground + b + s, 0, 255).astype(np.uint8)
+
+
 def mix(ground, boot, setup, a_boot, a_setup):
-    """ground + the boot elements scaled by a_boot + the setup elements (their difference from the navy ground) scaled by a_setup."""
-    base = Image.new('RGB', (W, H), ground)
-    boot_part = boot.point(lambda v: int(v * a_boot))                                   # the boot render's ground is black: its pixels ARE its elements
-    setup_part = ImageChops.subtract(setup, Image.new('RGB', (W, H), NAVY)).point(lambda v: int(v * a_setup))
-    return ImageChops.add(ImageChops.add(base, boot_part), setup_part)
+    """The PIL form used by main(): ground colour + the boot elements scaled by a_boot + the setup elements (their signed difference from the navy ground) scaled by a_setup."""
+    import numpy as np
+    g = np.array(ground, dtype=np.int32)
+    b = (np.asarray(boot, dtype=np.int32) * a_boot).astype(np.int32)
+    s = ((np.asarray(setup, dtype=np.int32) - np.array(NAVY, dtype=np.int32)) * a_setup).astype(np.int32)
+    return Image.fromarray(np.clip(g + b + s, 0, 255).astype(np.uint8))
 
 
 def main(binary, out):

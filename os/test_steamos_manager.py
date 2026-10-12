@@ -79,6 +79,7 @@ case "$1" in
 esac
 ''')
         (self.d / 'helper.sh').chmod(0o755)
+        (self.d / 'session-select.sh').write_text('#!/bin/sh\necho "$@" >> "$FAKE_DIR/session.log"\n'); (self.d / 'session-select.sh').chmod(0o755)
         (self.d / 'check.out').write_text('update 20261012.1 0.1.1 stable 1048576 0\nlater 20261020.1 0.2.0 stable 2097152 1 0.1.1\n')
         self.extra_env = {}
         self.prepare()
@@ -92,7 +93,7 @@ esac
         if notify.exists(): notify.unlink()
         ns = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); ns.bind(str(notify)); ns.settimeout(10)
         env = {**os.environ, 'DBUS_SYSTEM_BUS_ADDRESS': self.addr, 'DBUS_SESSION_BUS_ADDRESS': self.addr, 'NOTIFY_SOCKET': str(notify), 'FAKE_DIR': str(self.d),
-               'WISP_UPDATE_HELPER': str(self.d / 'helper.sh'), 'WISP_OS_RELEASE': str(self.d / 'os-release'), 'WISP_CPUFREQ_DIR': str(self.d / 'cpufreq'), 'WISP_DT_MODEL': str(self.d / 'model'),
+               'WISP_UPDATE_HELPER': str(self.d / 'helper.sh'), 'WISP_OS_RELEASE': str(self.d / 'os-release'), 'WISP_CPUFREQ_DIR': str(self.d / 'cpufreq'), 'WISP_DT_MODEL': str(self.d / 'model'), 'WISP_SESSION_SELECT': str(self.d / 'session-select.sh'),
                **self.extra_env}
         self.daemon = subprocess.Popen([str(BUILD['binary']), *(roles or self.ROLES)], env=env, stderr=subprocess.PIPE, text=True)
         self.addCleanup(self.stop, self.daemon)
@@ -144,7 +145,7 @@ class InterfaceTests(Fixture):
         valve = members((IFACES / 'com.steampowered.SteamOSManager1.xml').read_text())
         got = self.introspect(MANAGER, MPATH)
         claimed = {k for k in got if k.startswith(MANAGER + '.')}
-        self.assertEqual(claimed, {MANAGER + '.Manager2', MANAGER + '.CpuScaling1'})
+        self.assertEqual(claimed, {MANAGER + '.Manager2', MANAGER + '.CpuScaling1', MANAGER + '.SessionManagement1'})
         for name in claimed: self.assertEqual(got[name], valve[name], name)
 
     def test_the_object_manager_at_the_root_lists_the_manager_object_with_the_interfaces_we_claim(self):
@@ -153,15 +154,51 @@ class InterfaceTests(Fixture):
         objects = r['data'][0]
         self.assertIn(MPATH, objects)
         ifaces = set(objects[MPATH])
-        self.assertTrue({MANAGER + '.Manager2', MANAGER + '.CpuScaling1'} <= ifaces, ifaces)
+        self.assertTrue({MANAGER + '.Manager2', MANAGER + '.CpuScaling1', MANAGER + '.SessionManagement1'} <= ifaces, ifaces)
         self.assertNotIn(MANAGER + '.Storage1', ifaces)                                           # and nothing we do not implement
         cpu = objects[MPATH][MANAGER + '.CpuScaling1']
         self.assertEqual(sorted(cpu), ['AvailableCpuScalingGovernors', 'CpuScalingGovernor'])     # properties come with their values, as Valve's daemon lists them
 
     def test_interfaces_we_do_not_implement_are_absent_not_faked(self):
         got = self.introspect(MANAGER, MPATH)
-        for name in ('Storage1', 'SessionManagement1', 'GpuPerformanceLevel1', 'PerformanceProfile1', 'TdpLimit1', 'FanControl1', 'FactoryReset1', 'UpdateBios1'):
+        for name in ('Storage1', 'GpuPerformanceLevel1', 'PerformanceProfile1', 'TdpLimit1', 'FanControl1', 'FactoryReset1', 'UpdateBios1'):
             self.assertNotIn(MANAGER + '.' + name, got)
+
+    def test_session_management_is_the_switch_to_the_desktop_and_back(self):
+        sm = MANAGER + '.SessionManagement1'
+        log = self.d / 'session.log'
+        def calls(*a): return self.busctl('call', MANAGER, MPATH, sm, *a, check=False)
+        self.assertEqual(calls('SwitchToDesktopMode').returncode, 0)
+        self.wait_for(lambda: log.exists() and log.read_text() == 'desktop\n', 'the helper to be run with desktop')
+        self.assertEqual(calls('SwitchToGameMode').returncode, 0)
+        self.wait_for(lambda: log.read_text() == 'desktop\ngame\n', 'the helper to be run with game')
+        self.assertEqual(calls('SwitchToLoginMode', 's', 'desktop').returncode, 0)
+        self.assertEqual(calls('SwitchToLoginMode', 's', 'game').returncode, 0)
+        self.assertEqual(calls('SwitchToDesktopSession', 's', 'wispos').returncode, 0)
+        self.wait_for(lambda: log.read_text() == 'desktop\ngame\ndesktop\ngame\ndesktop\n', 'every switch to run the helper once')
+        for bad in (('SwitchToLoginMode', 's', 'plasma'), ('SwitchToDesktopSession', 's', 'plasma'), ('SwitchToLoginMode', 's', '')):
+            r = calls(*bad); self.assertNotEqual(r.returncode, 0, bad); self.assertRegex(r.stderr, r'must be game or desktop|ValidDesktopSessions', bad)
+        time.sleep(0.5)
+        self.assertEqual(log.read_text(), 'desktop\ngame\ndesktop\ngame\ndesktop\n', 'a refused request runs nothing')
+        self.assertEqual(json.loads(self.busctl('--json=short', 'call', MANAGER, MPATH, sm, 'ValidDesktopSessions').stdout)['data'], [['wispos']])
+        self.assertEqual(self.prop('DefaultDesktopSession', sm, MANAGER, MPATH), 'wispos')
+        self.assertEqual(self.prop('DefaultLoginMode', sm, MANAGER, MPATH), 'game')
+        self.busctl('set-property', MANAGER, MPATH, sm, 'DefaultLoginMode', 's', 'game')
+        r = self.busctl('set-property', MANAGER, MPATH, sm, 'DefaultLoginMode', 's', 'desktop', check=False)
+        self.assertNotEqual(r.returncode, 0); self.assertIn('not available yet', r.stderr)
+        self.assertEqual(self.prop('DefaultLoginMode', sm, MANAGER, MPATH), 'game', 'booting into the desktop is refused, not faked')
+        self.assertNotEqual(self.busctl('set-property', MANAGER, MPATH, sm, 'DefaultDesktopSession', 's', 'plasma', check=False).returncode, 0)
+        self.assertEqual(calls('CleanTemporarySessions').returncode, 0)
+        self.assertEqual(log.read_text(), 'desktop\ngame\ndesktop\ngame\ndesktop\n')
+
+    def test_a_missing_session_helper_does_not_hang_or_kill_the_daemon(self):
+        sm = MANAGER + '.SessionManagement1'
+        (self.d / 'session-select.sh').unlink()
+        r = self.busctl('call', MANAGER, MPATH, sm, 'SwitchToDesktopMode', check=False)
+        self.assertEqual(r.returncode, 0, 'the method returns before the helper runs, so it cannot report that it is missing')
+        time.sleep(0.5)
+        self.assertIsNone(self.daemon.poll(), 'the daemon is still there')
+        self.assertEqual(self.busctl('call', MANAGER, MPATH, sm, 'CleanTemporarySessions', check=False).returncode, 0)
 
     def test_usage_errors_exit_2(self):
         for args in ([], ['--atomupd'], ['--atomupd', 'bogus'], ['--manager', 'system', '--extra']):
@@ -346,14 +383,16 @@ class EndToEndTests(Fixture):
     def prepare(self):
         self.srv = tw.Server(('127.0.0.1', 0), tw.Handler); self.srv.files, self.srv.log, self.srv.drop, self.srv.throttle, self.srv.honor_range = {}, [], {}, 0, True
         threading.Thread(target=self.srv.serve_forever, daemon=True).start(); self.addCleanup(self.srv.server_close); self.addCleanup(self.srv.shutdown)
-        self.base = 'http://127.0.0.1:%d' % self.srv.server_address[1]; self.flash = self.d / 'flash'; self.flash.mkdir()
+        self.base = 'http://127.0.0.1:%d' % self.srv.server_address[1]; self.flash = self.d / 'flash'; (self.flash / 'extlinux').mkdir(parents=True)
+        (self.flash / 'extlinux/extlinux.conf').write_text(tw.EXTLINUX % 'a'); (self.flash / 'KERNEL').write_bytes(tw.OLD_KERNEL); (self.flash / 'SYSTEM').write_bytes(tw.OLD_SYSTEM)     # the card as flashed: slot a runs
+        (self.d / 'cmdline').write_text('boot=LABEL=ROCKNIX quiet wisp.slot=a disk=LABEL=STORAGE\n')
         for args in (('genpkey', '-algorithm', 'ED25519', '-out', str(self.d / 'key.pem')),): subprocess.run(['openssl', *args], check=True, capture_output=True)
         subprocess.run(['openssl', 'pkey', '-in', str(self.d / 'key.pem'), '-pubout', '-out', str(self.d / 'pub.pem')], check=True, capture_output=True)
         (self.d / 'os-release').write_text('BUILD_ID="20261011.1"\nWISPOS_VERSION="0.1.0"\nHW_DEVICE="H700"\n')
         (self.d / 'update.conf').write_text(json.dumps({'manifest_url': self.base + '/manifest.json'}))
         self.publish()
         self.extra_env = {'WISP_UPDATE_HELPER': str(tw.HELPER), 'WISP_UPDATE_CONF': str(self.d / 'update.conf'), 'WISP_UPDATE_PUBKEY': str(self.d / 'pub.pem'),
-                          'WISP_FLASH_DIR': str(self.flash), 'WISP_UPDATE_NO_REMOUNT': '1', 'WISP_UPDATE_ALLOW_HTTP': '1', 'WISP_UPDATE_NET_TIMEOUT': '5', 'WISP_UPDATE_RETRIES': '1',
+                          'WISP_FLASH_DIR': str(self.flash), 'WISP_CMDLINE': str(self.d / 'cmdline'), 'WISP_UPDATE_NO_REMOUNT': '1', 'WISP_UPDATE_ALLOW_HTTP': '1', 'WISP_UPDATE_NET_TIMEOUT': '5', 'WISP_UPDATE_RETRIES': '1',
                           'WISP_UPDATE_NO_BACKOFF': '1', 'WISP_UPDATE_FREE_MARGIN': '0', 'TMPDIR': str(BUILD['tmp'])}
 
     def publish(self, tamper=False, corrupt=False):
@@ -364,13 +403,17 @@ class EndToEndTests(Fixture):
         self.srv.files.update({'/manifest.json': raw.replace(b'0.1.1', b'9.9.9') if tamper else raw, '/manifest.json.sig': base64.b64encode(sig), '/KERNEL': tw.KERNEL,
                                '/SYSTEM': (bytes([tw.SYSTEM[0] ^ 1]) + tw.SYSTEM[1:]) if corrupt else tw.SYSTEM})
 
+    def default(self): return (self.flash / 'extlinux/extlinux.conf').read_text().splitlines()[0]
+
     def test_check_start_and_success_with_the_real_helper(self):
         r = json.loads(self.call('CheckForUpdates', 'a{sv}', '0').stdout)['data'][0]
         self.assertEqual(r['20261012.1']['version']['data'], '0.1.1'); self.assertEqual(r['20261012.1']['estimated_size']['data'], len(tw.KERNEL) + len(tw.SYSTEM))
         self.call('StartUpdate', 's', '20261012.1')
-        self.wait_for(lambda: self.status() == 3, 'the update to be staged', 60)
+        self.wait_for(lambda: self.status() == 3, 'the update to be installed', 60)
         self.assertEqual(self.prop('ProgressPercentage'), 100)
-        self.assertEqual(sorted(p.name for p in (self.flash / 'wispos/update').iterdir()), ['KERNEL.new', 'READY', 'SYSTEM.new'])
+        self.assertEqual((self.flash / 'wispos/b/KERNEL').read_bytes(), tw.KERNEL); self.assertEqual((self.flash / 'wispos/b/SYSTEM').read_bytes(), tw.SYSTEM)       # the new system is in the slot that was not running
+        self.assertEqual(sorted(p.name for p in (self.flash / 'wispos/update').iterdir()), ['PENDING']); self.assertEqual(self.default(), 'DEFAULT b')               # and the next start is that slot, on trial
+        self.assertEqual((self.flash / 'KERNEL').read_bytes(), tw.OLD_KERNEL); self.assertEqual((self.flash / 'SYSTEM').read_bytes(), tw.OLD_SYSTEM)                  # the running slot was never touched
 
     def test_without_a_configured_source_the_check_says_so_and_nothing_is_guessed(self):
         (self.d / 'update.conf').write_text('{}')
@@ -389,15 +432,17 @@ class EndToEndTests(Fixture):
         self.call('StartUpdate', 's', '20261012.1')
         self.wait_for(lambda: self.status() == 4, 'the update to fail', 60)
         self.assertEqual(self.prop('FailureCode'), 'org.wispos.UpdateError.HashMismatch'); self.assertIn('does not match the signed manifest', self.prop('FailureMessage'))
-        self.assertFalse((self.flash / 'wispos/update/READY').exists())
+        self.assertFalse((self.flash / 'wispos/update/PENDING').exists()); self.assertEqual(self.default(), 'DEFAULT a')           # nothing was switched
+        self.assertEqual(list((self.flash / 'wispos/b').glob('*.part')), [])
 
     def test_cancelling_mid_download_leaves_no_partial_files_on_the_card(self):
         self.srv.throttle = 0.15
         self.call('CheckForUpdates', 'a{sv}', '0'); self.call('StartUpdate', 's', '20261012.1')
-        self.wait_for(lambda: list((self.flash / 'wispos/update').glob('*.part')), 'the download to start', 30)
+        self.wait_for(lambda: list((self.flash / 'wispos/b').glob('*.part')), 'the download to start', 30)
         self.call('PauseUpdate'); self.assertEqual(self.status(), 2)
         self.call('CancelUpdate'); self.wait_for(lambda: self.status() == 5, 'the cancel', 30)
-        self.wait_for(lambda: not list((self.flash / 'wispos/update').iterdir()), 'the helper to clean up', 30)
+        self.wait_for(lambda: not list((self.flash / 'wispos/b').glob('*.part')), 'the helper to clean up', 30)
+        self.assertFalse((self.flash / 'wispos/update/PENDING').exists()); self.assertEqual(self.default(), 'DEFAULT a')           # a cancelled download switched nothing
 
 
 class CrossCompileTests(unittest.TestCase):

@@ -1,0 +1,298 @@
+#!/usr/bin/python3
+"""wisp-usb: the USB-C port's three states, one at a time (docs/WISPOS-OS-DESIGN.md, "USB-C: power and data together"; the desktop-mode menu calls this).
+
+  wisp-usb status      the state, and what each other state would need: `key: value` lines for the menu; exit 0
+  wisp-usb off         peripheral only: no gadget, host role refused (the board can never source 5 V). The state after every boot: nothing is remembered
+  wisp-usb computer    the handheld appears on a PC as a USB Ethernet adapter (CDC-NCM) at 169.254.170.2 and hands the PC one address; the PC's port also charges it
+  wisp-usb host        allow the host role: an OTG adapter plugged in now makes the handheld the host, powered from the battery (host mode never charges)
+  wisp-usb watch       internal, run by wisp-usb-watch.service while host mode is on: ends it when external power appears or the battery falls below the floor
+
+Exit codes: 0 done; 1 failed; 2 usage; 3 refused (the reason is printed on stderr, worded for the menu); 4 not available on this system.
+
+How host mode is kept safe (the operator's rules, 2026-10-11): the kernel gate (os/boot/patches/0001-phy-sun4i-usb-host-gate.patch) reads the ID pin as "peripheral" until the PHY's
+`host_enable` is written 1, so nothing plugged in can make the board source 5 V; this program writes it only when no external power is present and the battery is above the floor,
+and the watcher writes it back to 0 the moment either stops being true (it listens for power-supply uevents, it does not poll for the charger). The kernel also refuses to turn its
+own 5 V on while VBUS is present. Without the gate attribute (any other kernel) host mode is not offered at all. Nothing here has run on the hardware yet: docs/WISPOS-OS-DESIGN.md
+lists the bench tests that decide whether host mode ships.
+
+Every path can be moved under WISP_USB_ROOT (tests run this against a fake /sys); the commands it runs are named by WISP_SYSTEMCTL, WISP_USB_IP and WISP_USB_UDHCPD."""
+import dataclasses, glob, os, select, socket, subprocess, sys, time
+
+ROOT = os.environ.get('WISP_USB_ROOT', '')
+RUN = ROOT + '/run/wisp-usb'
+GADGET = ROOT + '/sys/kernel/config/usb_gadget/wisp'
+FLOOR = int(os.environ.get('WISP_USB_BATTERY_FLOOR', '15'))              # percent: host mode runs on the battery, so it ends below this
+RECHECK = float(os.environ.get('WISP_USB_RECHECK', '60'))                # seconds between battery checks while no uevent arrives
+SSH_FLAG = os.environ.get('WISP_SSH_FLAG', '/storage/.config/wispos/ssh-enabled')
+SYSTEMCTL, IP, UDHCPD = (os.environ.get(k, v) for k, v in (('WISP_SYSTEMCTL', 'systemctl'), ('WISP_USB_IP', 'ip'), ('WISP_USB_UDHCPD', 'udhcpd')))
+WATCH_UNIT = 'wisp-usb-watch.service'
+ADDRESS, PEER, PREFIX, NETMASK = '169.254.170.2', '169.254.170.1', 16, '255.255.0.0'      # link-local, as ROCKNIX's gadget used: no clash with a LAN
+DEV_MAC = '82:57:49:53:50:01'                                            # fixed ("WISP"): a PC sees one network for every handheld and asks Public/Private once
+
+# Words for the menu. Each reason has the sentence for a refusal and, where the watcher can end a running host mode for it, the sentence for that.
+REASONS = {
+    'no-gate': ('This kernel cannot keep the host role off, so host mode is not offered.', None),
+    'no-udc': ('This device has no USB device controller.', None),
+    'unknown-external': ('Cannot tell whether external power is connected.', 'Host mode ended: cannot tell whether external power is connected.'),
+    'external': ('Unplug the charger first: host mode runs on the battery and never charges.', 'Host mode ended: external power appeared.'),
+    'unknown-battery': ('Cannot read the battery level.', 'Host mode ended: cannot read the battery level.'),
+    'battery': ('The battery is at {battery}%: host mode needs at least {floor}%.', 'Host mode ended: the battery fell to {battery}% (the floor is {floor}%).'),
+}
+
+
+@dataclasses.dataclass
+class Facts:
+    gate: str = None          # path of the PHY's host_enable attribute; None when the kernel has no gate
+    udc: str = None           # name of the USB device controller; None when there is none
+    host_on: bool = False     # host_enable reads 1
+    computer_on: bool = False  # the gadget is bound to the controller
+    external: bool = None     # True/False: some non-battery supply is/is not online; None: cannot tell
+    battery: int = None       # percent; None: cannot tell
+
+
+def read(path, default=None):
+    try:
+        with open(path) as f: return f.read().strip()
+    except OSError:
+        return default
+
+
+def write(path, value):
+    with open(path, 'w') as f: f.write(str(value))
+
+
+def read_facts():
+    f = Facts()
+    gates = sorted(glob.glob(ROOT + '/sys/bus/platform/drivers/sun4i-usb-phy/*/host_enable'))
+    if gates: f.gate, f.host_on = gates[0], read(gates[0]) == '1'
+    udcs = sorted(os.listdir(ROOT + '/sys/class/udc')) if os.path.isdir(ROOT + '/sys/class/udc') else []
+    f.udc = udcs[0] if udcs else None
+    f.computer_on = bool(read(GADGET + '/UDC'))
+    seen_supply = False
+    for d in sorted(glob.glob(ROOT + '/sys/class/power_supply/*')):
+        kind = read(d + '/type')
+        if kind == 'Battery':
+            cap = read(d + '/capacity')
+            if f.battery is None and cap is not None and cap.isdigit(): f.battery = int(cap)
+        elif kind is not None:
+            states = [read(d + '/' + a) for a in ('online', 'present')]
+            states = [s for s in states if s in ('0', '1')]
+            if states:
+                seen_supply = True
+                if '1' in states: f.external = True
+    if f.external is None and seen_supply: f.external = False
+    return f
+
+
+def host_check(f, floor=FLOOR):
+    """Why host mode may not be (or stay) on right now: a key of REASONS, or None. Pure. The one place the operator's rules 2 and 4 are written."""
+    if f.gate is None: return 'no-gate'
+    if f.external is None: return 'unknown-external'
+    if f.external: return 'external'
+    if f.battery is None: return 'unknown-battery'
+    if f.battery < floor: return 'battery'
+    return None
+
+
+def decide(request, f, floor=FLOOR):
+    """What a request needs: ('do', None), ('refuse', key) or ('unavailable', key). Pure."""
+    if request == 'off': return 'do', None
+    if request == 'computer': return ('do', None) if f.udc else ('unavailable', 'no-udc')
+    if request == 'host':
+        key = host_check(f, floor)
+        if key == 'no-gate': return 'unavailable', key
+        return ('refuse', key) if key else ('do', None)
+    raise ValueError(request)
+
+
+def text(key, f, ended=False, floor=FLOOR):
+    refusal, end = REASONS[key]
+    return (end if ended and end else refusal).format(battery=f.battery, floor=floor)
+
+
+def run(cmd):
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- the gadget (computer mode)
+def rmdir(path):
+    os.rmdir(path)            # a seam: configfs removes a directory's attribute files by itself; a fake tree in a test cannot
+
+
+def gadget_down():
+    """Undo gadget_up in the reverse order configfs requires. Every step may find its piece already gone."""
+    pidfile = RUN + '/udhcpd.pid'
+    pid = read(pidfile)
+    if pid and pid.isdigit() and 'udhcpd' in (read('/proc/%s/cmdline' % pid, '') or ''):
+        try: os.kill(int(pid), 15)
+        except OSError: pass
+    for p in (pidfile, RUN + '/udhcpd.conf', RUN + '/udhcpd.leases'):
+        try: os.unlink(p)
+        except OSError: pass
+    if not os.path.isdir(GADGET): return
+    try: write(GADGET + '/UDC', '\n')
+    except OSError: pass
+    for link in (GADGET + '/os_desc/c.1', GADGET + '/configs/c.1/ncm.usb0'):
+        try: os.unlink(link)
+        except OSError: pass
+    for d in ('/configs/c.1/strings/0x409', '/configs/c.1', '/functions/ncm.usb0', '/strings/0x409', ''):
+        try: rmdir(GADGET + d)
+        except OSError: pass
+
+
+def find_iface(ifname):
+    """The gadget's network interface: the one carrying its fixed MAC (udev may have renamed the kernel's usb0), else the kernel's name if it exists."""
+    base = ROOT + '/sys/class/net'
+    for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        if (read('%s/%s/address' % (base, name)) or '').lower() == DEV_MAC: return name
+    return ifname if os.path.isdir('%s/%s' % (base, ifname)) else None
+
+
+def gadget_up(f):
+    """CDC-NCM on the controller, an address on its interface, one DHCP lease for the PC. Raises OSError (or RuntimeError) after taking back what it did."""
+    g = GADGET
+    try:
+        machine = ((read(ROOT + '/etc/machine-id') or '') + '0' * 12)[:12]
+        host_mac = ':'.join(('12' + machine[2:])[i:i + 2] for i in range(0, 12, 2))
+        for d in ('strings/0x409', 'configs/c.1/strings/0x409', 'functions/ncm.usb0'):
+            os.makedirs('%s/%s' % (g, d), exist_ok=True)
+        for name, value in (('bcdUSB', '0x0200'), ('bDeviceClass', '0x02'), ('idVendor', '0x1d6b'), ('idProduct', '0x0104')):
+            write('%s/%s' % (g, name), value)
+        for name, value in (('manufacturer', 'WispOS'), ('product', 'WispOS handheld'), ('serialnumber', machine)):
+            write('%s/strings/0x409/%s' % (g, name), value)
+        write(g + '/configs/c.1/bmAttributes', '0xC0'); write(g + '/configs/c.1/MaxPower', '250')
+        write(g + '/configs/c.1/strings/0x409/configuration', 'CDC')
+        write(g + '/functions/ncm.usb0/dev_addr', DEV_MAC); write(g + '/functions/ncm.usb0/host_addr', host_mac)
+        os.symlink(g + '/functions/ncm.usb0', g + '/configs/c.1/ncm.usb0')
+        try:                                                         # Windows picks its NCM driver from these; recent Windows does it by class anyway
+            os.makedirs(g + '/os_desc', exist_ok=True)                 # configfs has made these already; this only matters to a kernel that has not
+            os.makedirs(g + '/functions/ncm.usb0/os_desc/interface.ncm', exist_ok=True)
+            write(g + '/os_desc/use', '1'); write(g + '/os_desc/b_vendor_code', '0xcd'); write(g + '/os_desc/qw_sign', 'MSFT100')
+            write(g + '/functions/ncm.usb0/os_desc/interface.ncm/compatible_id', 'WINNCM')
+            os.symlink(g + '/configs/c.1', g + '/os_desc/c.1')
+        except OSError as e:
+            print('wisp-usb: Windows driver hints not set (%s); a PC that needs them may not bind its driver' % e, file=sys.stderr)
+        write(g + '/UDC', f.udc)
+        if read(g + '/UDC') != f.udc: raise RuntimeError('the controller did not accept the gadget')
+        ifname = read(g + '/functions/ncm.usb0/ifname') or 'usb0'
+        for _ in range(30):                                          # the network device appears when the function binds
+            iface = find_iface(ifname)
+            if iface: break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError('the network interface %s did not appear' % ifname)
+        os.makedirs(RUN, exist_ok=True)
+        for cmd in ([IP, 'address', 'add', '%s/%d' % (ADDRESS, PREFIX), 'dev', iface], [IP, 'link', 'set', iface, 'up']):
+            r = run(cmd)
+            if r.returncode: raise RuntimeError('%s failed: %s' % (' '.join(cmd[:3]), r.stderr.strip()))
+        write(RUN + '/udhcpd.conf', 'interface %s\nstart %s\nend %s\nopt subnet %s\nopt lease 86400\nmax_leases 1\n'
+                                    'option msstaticroutes 0.0.0.0/32 %s\nlease_file %s/udhcpd.leases\npidfile %s/udhcpd.pid\nremaining no\n'
+                                    % (iface, PEER, PEER, NETMASK, ADDRESS, RUN, RUN))
+        r = run([UDHCPD, '-S', RUN + '/udhcpd.conf'])
+        if r.returncode: raise RuntimeError('udhcpd failed: %s' % r.stderr.strip())
+    except (OSError, RuntimeError):
+        gadget_down()
+        raise
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- the commands
+def note(message=None):
+    """The last thing that ended a mode on its own, for the menu to show once."""
+    try:
+        os.makedirs(RUN, exist_ok=True)
+        if message: write(RUN + '/note', message + '\n')
+        elif os.path.exists(RUN + '/note'): os.unlink(RUN + '/note')
+    except OSError:
+        pass
+
+
+def status(f=None):
+    f = f or read_facts()
+    mode = 'host' if f.host_on else 'computer' if f.computer_on else 'off'
+    print('usb: ' + mode)
+    for name in ('host', 'computer'):
+        if mode == name: print('%s: on' % name); continue
+        kind, key = decide(name, f)
+        print('%s: available' % name if kind == 'do' else '%s: unavailable: %s' % (name, text(key, f)))
+    if mode == 'computer':
+        print('address: ' + ADDRESS)
+        print('login: ssh wisp@%s%s' % (ADDRESS, '' if os.path.exists(SSH_FLAG) else ' (SSH is off: run wisp-ssh on first)'))
+    if mode == 'host':
+        for d in sorted(glob.glob(ROOT + '/sys/class/regulator/regulator.*')):
+            if read(d + '/name') == 'usb0-vbus': print('5v-output: ' + (read(d + '/state') or 'unknown'))
+        if f.battery is not None: print('battery: %d%%' % f.battery)
+    n = read(RUN + '/note')
+    if n: print('note: ' + n)
+    return 0
+
+
+def leave_host(f):
+    if f.gate and f.host_on: write(f.gate, '0')
+
+
+def switch(request):
+    f = read_facts()
+    kind, key = decide(request, f)
+    if kind != 'do':
+        print('wisp-usb: ' + text(key, f), file=sys.stderr)
+        return 3 if kind == 'refuse' else 4
+    try:
+        if request == 'off':
+            leave_host(f); gadget_down()
+            if f.host_on: run([SYSTEMCTL, 'stop', WATCH_UNIT])
+        elif request == 'computer':
+            leave_host(f)
+            if f.host_on: run([SYSTEMCTL, 'stop', WATCH_UNIT])
+            if not f.computer_on: gadget_up(f)
+        else:                                                         # host
+            gadget_down()
+            write(f.gate, '1')
+            r = run([SYSTEMCTL, 'start', WATCH_UNIT])
+            if r.returncode:                                          # without the watcher the battery floor and the auto-drop are not enforced here: do not stay in host mode
+                write(f.gate, '0')
+                print('wisp-usb: the host-mode watcher did not start; host mode stays off', file=sys.stderr)
+                return 1
+    except (OSError, RuntimeError) as e:
+        print('wisp-usb: %s failed: %s' % (request, e), file=sys.stderr)
+        return 1
+    note()
+    return status()
+
+
+def uevent_socket():
+    s = socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, 15)       # NETLINK_KOBJECT_UEVENT
+    s.bind((0, 1))                                                    # group 1: the kernel's own events
+    return s
+
+
+def watch(sock=None):
+    """Run while host mode is on. Look now, then again on every power-supply uevent and every RECHECK seconds (the battery level may not raise an event)."""
+    sock = sock or uevent_socket()
+    while True:
+        f = read_facts()
+        if not f.host_on: return 0                                    # something else ended host mode: nothing left to watch
+        key = host_check(f)
+        if key:
+            message = text(key, f, ended=True)
+            leave_host(f); note(message)
+            print('wisp-usb: ' + message, file=sys.stderr)
+            return 0
+        due = time.monotonic() + RECHECK
+        while True:
+            left = due - time.monotonic()
+            if left <= 0: break                                       # time for the slow look, however busy the uevent stream is
+            ready, _, _ = select.select([sock], [], [], left)
+            if ready and b'SUBSYSTEM=power_supply' in sock.recv(65536): break
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) == 2 else ''
+    if cmd == 'status': return status()
+    if cmd in ('off', 'computer', 'host'): return switch(cmd)
+    if cmd == 'watch': return watch()
+    print('usage: wisp-usb status|off|computer|host', file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

@@ -8,11 +8,18 @@
  * are reachable, and exits 0 only when they are (exits at once if the device is already online). For the design renders:
  *     wisp-setup --demo STATE --out FILE.bmp      STATE: list password connecting checking failed nointernet download
  * For tests: --script "down a type:secret start until:done" feeds buttons, --shots DIR saves a frame per state, --timeout S.
+ * First run only: --intro MARKER plays the boot -> setup hand-over (3 s, fade out then fade in; os/setup/handover.h) before the first screen, unless the file MARKER exists, and creates it
+ * when it is over. The first frame is the boot screen's own picture (os/setup/bootframe.c draws it with the code the boot screens share), so the panel does not change when this window
+ * takes over from the boot screen. A design render of one frame: --demo handover:T (T from 0 to 1).
  * Environment: WISP_NMCLI, WISP_CURL, WISP_CHECK_URL replace the programs and the URL (the tests use fakes).
  */
+#include <fcntl.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include "../ui/wisp-ui.h"
+#include "kb.h"
+#include "handover.h"
+#include "bootframe.h"
 #include <SDL2/SDL_image.h>
 #include "nm.h"
 #ifdef WISP_DEBUG_CRASH
@@ -182,10 +189,6 @@ static void screen_list(App *a) {
     hint(x, 452, "Y", "Hidden network", &adv);
 }
 
-static const char *ROWS_LOWER[4] = {"1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"};
-static const char *ROWS_UPPER[4] = {"1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
-static const char *ROWS_SYM[4]   = {"1234567890", "!@#$%^&*()", "-_=+[]{};:", "'\",.<>/?\\|"};
-
 static void key(int x, int y, int w, int h, const char *label, int selected, SDL_Color base) {
     rrect(x, y, w, h, RAD, selected ? C_FOCUS : base);
     text(F_BODY, label, x + w / 2, y + (h - 24) / 2 - 1, selected ? C_FOCUS_FG : C_TEXT, 1, w - 6);
@@ -211,19 +214,21 @@ static void screen_password(App *a) {
     if (((int)(a->t * 2)) % 2 == 0) { SDL_Rect c = {PANEL_X + 18 + tw, 117, 2, 24}; col(C_ACCENT); SDL_RenderFillRect(R, &c); }
     if (!naming) text(F_TINY, a->show ? "visible" : "hidden", PANEL_X + PANEL_W - 14, 121, C_DIM, 2, 0);
     /* keyboard: keys on a surface, as Steam's on-screen keyboard */
-    const char **rows = a->symbols ? ROWS_SYM : a->shift ? ROWS_UPPER : ROWS_LOWER;
-    int ky = 166, kw = 40, kh = 40, gap = 4;
-    rrect(PANEL_X, 158, PANEL_W, 4 * (kh + gap) + kh + 24, RAD, C_PANEL);
-    for (int r = 0; r < 4; r++) {
-        int len = (int)strlen(rows[r]); int total = len * (kw + gap) - gap + (r == 3 ? 64 + gap : 0);
+    const char *const *rows = kb_page(a->symbols, a->shift);
+    int ky = 166, kw = kb_key_w(a->symbols), kh = KB_KEY_H, gap = KB_GAP;
+    rrect(PANEL_X, 158, PANEL_W, KB_ROWS * (kh + gap) + kh + 24, RAD, C_PANEL);
+    for (int r = 0; r < KB_ROWS; r++) {
+        int len = (int)strlen(rows[r]); int total = kb_row_width(a->symbols, a->shift, r);
         int x = PANEL_X + (PANEL_W - total) / 2;
         for (int c = 0; c < len; c++) { char s2[2] = {rows[r][c], 0}; key(x + c * (kw + gap), ky + r * (kh + gap), kw, kh, s2, a->kr == r && a->kc == c, C_BG); }
-        if (r == 3) key(x + len * (kw + gap), ky + r * (kh + gap), 64, kh, "del", a->kr == 3 && a->kc == len, C_BLACK);
+        if (kb_row_has_del(a->symbols, r)) key(x + len * (kw + gap), ky + r * (kh + gap), KB_DEL_W, kh, "del", a->kr == r && a->kc == len, C_BLACK);
     }
-    int sy = ky + 4 * (kh + gap), x = PANEL_X + 6;
-    struct { const char *l; int w; } sp[5] = {{a->symbols ? "abc" : "123", 54}, {"shift", 66}, {"space", 118}, {a->show ? "hide" : "show", 70}, {naming ? "Next" : "Connect", 114}};
-    for (int i = 0; i < 5; i++) {
-        SDL_Color base = i == 4 ? C_ACCENT : (i == 1 && a->shift) || (i == 3 && a->show) ? C_ACCENT : C_BLACK;
+    int sy = ky + KB_ROWS * (kh + gap), x = PANEL_X + 6;
+    /* the second special key is "shift" on the letters pages and "del" on the symbols page (kb.h: ten symbols leave no room for del in their row) */
+    struct { const char *l; int w; } sp[KB_SPECIALS] = {{a->symbols ? "abc" : "123", KB_SPECIAL_W[0]}, {a->symbols ? "del" : "shift", KB_SPECIAL_W[1]}, {"space", KB_SPECIAL_W[2]},
+                                                        {a->show ? "hide" : "show", KB_SPECIAL_W[3]}, {naming ? "Next" : "Connect", KB_SPECIAL_W[4]}};
+    for (int i = 0; i < KB_SPECIALS; i++) {
+        SDL_Color base = i == 4 ? C_ACCENT : (i == KB_SPECIAL_SHIFT && a->shift && !a->symbols) || (i == 3 && a->show) ? C_ACCENT : C_BLACK;
         key(x, sy, sp[i].w, kh, sp[i].l, a->kr == 4 && a->kc == i, base);
         x += sp[i].w + gap;
     }
@@ -311,6 +316,7 @@ static void demo_data(App *a, const char *state) {
     a->progress = 0.38f; a->done_mb = 412; a->total_mb = 1080;
     if (!strcmp(state, "list")) { a->st = ST_LIST; a->sel = 1; }
     else if (!strcmp(state, "password")) { a->st = ST_PASSWORD; snprintf(a->pw, 96, "my-secret-2026"); a->kr = 2; a->kc = 4; }
+    else if (!strcmp(state, "symbols")) { a->st = ST_PASSWORD; a->symbols = 1; snprintf(a->pw, 96, "p@ss!w0rd"); a->kr = 3; a->kc = 9; }       /* the symbols page: its last row has ten keys */
     else if (!strcmp(state, "connecting")) a->st = ST_CONNECTING;
     else if (!strcmp(state, "checking")) a->st = ST_CHECKING;
     else if (!strcmp(state, "failed")) { a->st = ST_FAILED; snprintf(a->msg, 160, "Reason: Wrong password."); }
@@ -318,6 +324,58 @@ static void demo_data(App *a, const char *state) {
     else if (!strcmp(state, "download")) { a->st = ST_DOWNLOAD; snprintf(a->phase, sizeof a->phase, "download"); }
     else if (!strcmp(state, "extract")) { a->st = ST_DOWNLOAD; a->progress = 1; a->done_mb = a->total_mb; snprintf(a->phase, sizeof a->phase, "extract"); }
     else if (!strcmp(state, "dlfailed")) { a->st = ST_DLFAILED; snprintf(a->msg, 160, "Lost the connection to Steam's servers."); }
+}
+
+/* ================= the first-run hand-over ================= */
+/* The boot screen's pixels and the setup screen's are mixed by handover.h's arithmetic, which is the contract's (os/splash/preview_handover.py). The setup screen is drawn into a render
+ * target each frame and read back (a 720 x 480 copy, a few milliseconds) because the mix needs its pixels, not its draw calls. */
+typedef struct { uint32_t boot[W * H], setup[W * H], out[W * H]; SDL_Texture *target, *show; Uint32 t0; int frame, active; const char *marker; } Handover;
+static Handover *HO;
+
+static void handover_compose(App *a, double t, int spin_frame, uint32_t *out_px) {
+    SDL_SetRenderTarget(R, HO->target);
+    render(a);
+    SDL_Rect all = {0, 0, W, H};
+    SDL_RenderReadPixels(R, &all, SDL_PIXELFORMAT_ARGB8888, HO->setup, W * 4);
+    SDL_SetRenderTarget(R, NULL);
+    bootframe_render(HO->boot, W, H, "Getting ready for setup", "This only happens the first time.", IS_DEV, spin_frame);
+    ho_frame(out_px, HO->boot, HO->setup, W * H, t);
+}
+
+static int handover_init(const char *marker) {
+    HO = calloc(1, sizeof *HO);
+    if (!HO) return 0;
+    HO->target = SDL_CreateTexture(R, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, W, H);
+    HO->show = SDL_CreateTexture(R, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, W, H);
+    if (!HO->target || !HO->show) { free(HO); HO = NULL; return 0; }
+    HO->marker = marker; HO->t0 = SDL_GetTicks(); HO->active = 1;
+    return 1;
+}
+
+/* Draws this frame of the hand-over into the back buffer; returns 0 once it is over (and then nothing was drawn). */
+static int handover_frame(App *a) {
+    if (!HO || !HO->active) return 0;
+    double t = (SDL_GetTicks() - HO->t0) / 1000.0 / HO_SECONDS;
+    if (t >= 1.0) {
+        HO->active = 0;
+        FILE *f = HO->marker ? fopen(HO->marker, "w") : NULL;                  /* once only: the next first-run screen starts without it */
+        if (f) { fputs("played\n", f); fclose(f); }
+        return 0;
+    }
+    handover_compose(a, t, HO->frame++, HO->out);
+    SDL_UpdateTexture(HO->show, NULL, HO->out, W * 4);
+    SDL_RenderClear(R);
+    SDL_RenderCopy(R, HO->show, NULL, NULL);
+    return 1;
+}
+
+/* One frame of the hand-over as a picture, for the design check against the preview (--demo handover:T). */
+static void handover_demo(App *a, double t, const char *path) {
+    HO = calloc(1, sizeof *HO);
+    HO->target = SDL_CreateTexture(R, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, W, H);
+    handover_compose(a, t, 0, HO->out);
+    SDL_Surface *shot = SDL_CreateRGBSurfaceWithFormatFrom(HO->out, W, H, 32, W * 4, SDL_PIXELFORMAT_ARGB8888);
+    SDL_SaveBMP(shot, path); SDL_FreeSurface(shot);
 }
 
 /* ================= the real program: backend threads, input, state machine ================= */
@@ -476,11 +534,8 @@ static void start_connect(App *a) {               /* caller holds LOCK */
 }
 
 /* ---- on-screen keyboard ---- */
-static int row_len(App *a, int r) {
-    if (r == 4) return 5;
-    const char **rows = a->symbols ? ROWS_SYM : a->shift ? ROWS_UPPER : ROWS_LOWER;
-    return (int)strlen(rows[r]) + (r == 3 ? 1 : 0);
-}
+static int row_len(App *a, int r) { return kb_row_len(a->symbols, a->shift, r); }
+static void clamp_key(App *a) { int len = row_len(a, a->kr); if (a->kc >= len) a->kc = len - 1; }     /* after a page change: the new page's row can be shorter */
 static char *typed(App *a) { return a->hidden && a->stage == 0 ? a->ssid : a->pw; }
 static size_t typed_cap(App *a) { return a->hidden && a->stage == 0 ? sizeof a->ssid : sizeof a->pw; }
 static void type_char(App *a, char c) { char *b = typed(a); size_t n = strlen(b); if (n + 1 < typed_cap(a) && n < (a->hidden && a->stage == 0 ? 32u : 63u)) { b[n] = c; b[n + 1] = 0; } a->msg[0] = 0; }
@@ -502,16 +557,16 @@ static void open_password(App *a, int hidden) {
 }
 
 static void activate_key(App *a) {
-    const char **rows = a->symbols ? ROWS_SYM : a->shift ? ROWS_UPPER : ROWS_LOWER;
-    if (a->kr < 4) {
+    const char *const *rows = kb_page(a->symbols, a->shift);
+    if (a->kr < KB_ROWS) {
         int len = (int)strlen(rows[a->kr]);
         if (a->kc < len) { type_char(a, rows[a->kr][a->kc]); if (a->shift) a->shift = 0; }
-        else backspace(a);                                              /* the "del" key ends row 3 */
+        else if (kb_row_has_del(a->symbols, a->kr)) backspace(a);       /* the "del" key ends row 3 of the letters pages */
         return;
     }
     switch (a->kc) {
-        case 0: a->symbols = !a->symbols; break;
-        case 1: a->shift = !a->shift; break;
+        case 0: a->symbols = !a->symbols; clamp_key(a); break;
+        case KB_SPECIAL_SHIFT: if (a->symbols) backspace(a); else a->shift = !a->shift; break;      /* "del" on the symbols page, "shift" on the letters pages */
         case 2: type_char(a, ' '); break;
         case 3: a->show = !a->show; break;
         case 4: submit(a); break;
@@ -525,6 +580,7 @@ static void ensure_visible(App *a) {
 
 /* One button press, in whichever state the screen is in. */
 static void press(App *a, Btn b) {
+    if (HO && HO->active) return;                                          /* nothing can be pressed while the screen is still arriving (the first-run hand-over) */
     SDL_LockMutex(LOCK);
     switch (a->st) {
     case ST_LIST:
@@ -542,13 +598,13 @@ static void press(App *a, Btn b) {
         if (b == B_LEFT) { len = row_len(a, a->kr); a->kc = (a->kc + len - 1) % len; }
         else if (b == B_RIGHT) { len = row_len(a, a->kr); a->kc = (a->kc + 1) % len; }
         else if (b == B_UP || b == B_DOWN) {
-            int old = row_len(a, a->kr), nr = b == B_UP ? (a->kr + 4) % 5 : (a->kr + 1) % 5, nl = row_len(a, nr);
+            int old = row_len(a, a->kr), nr = b == B_UP ? (a->kr + KB_ROWS) % (KB_ROWS + 1) : (a->kr + 1) % (KB_ROWS + 1), nl = row_len(a, nr);
             a->kc = a->kc * nl / old; if (a->kc >= nl) a->kc = nl - 1; a->kr = nr;
         }
         else if (b == B_A) activate_key(a);
         else if (b == B_B) { if (typed(a)[0]) backspace(a); else if (a->hidden && a->stage == 1) { a->stage = 0; } else set_state(a, ST_LIST); }
-        else if (b == B_X) a->shift = !a->shift;
-        else if (b == B_Y) a->symbols = !a->symbols;
+        else if (b == B_X) { if (!a->symbols) a->shift = !a->shift; }                       /* shift means nothing on the symbols page */
+        else if (b == B_Y) { a->symbols = !a->symbols; clamp_key(a); }
         else if (b == B_START) submit(a);
         else if (b == B_SELECT) set_state(a, ST_LIST);
         break; }
@@ -625,7 +681,7 @@ static void save_shot(App *a, const char *dir, int *seq, const char *name) {
 }
 
 int main(int argc, char **argv) {
-    const char *demo = NULL, *out = "frame.bmp", *fonts = "/usr/share/fonts/liberation", *badge = "/usr/share/wispos/wispos-badge.png", *script = NULL, *shots = NULL;
+    const char *demo = NULL, *out = "frame.bmp", *fonts = "/usr/share/fonts/liberation", *badge = "/usr/share/wispos/wispos-badge.png", *script = NULL, *shots = NULL, *intro = NULL;
     int timeout_s = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--demo") && i + 1 < argc) demo = argv[++i];
@@ -635,6 +691,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
         else if (!strcmp(argv[i], "--shots") && i + 1 < argc) shots = argv[++i];
         else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout_s = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--intro") && i + 1 < argc) intro = argv[++i];
     }
 #ifdef WISP_DEBUG_CRASH
     signal(SIGSEGV, on_segv);
@@ -664,6 +721,7 @@ int main(int argc, char **argv) {
     SDL_SetTextureBlendMode(BADGE, SDL_BLENDMODE_BLEND);
     static App a; memset(&a, 0, sizeof a);
     if (demo) {
+        if (!strncmp(demo, "handover:", 9)) { demo_data(&a, "list"); handover_demo(&a, atof(demo + 9), out); return 0; }
         demo_data(&a, demo); save_frame(&a, out);
         return 0;
     }
@@ -673,6 +731,11 @@ int main(int argc, char **argv) {
     if (online) start_install(&a); else set_state(&a, have_wifi_adapter() ? ST_LIST : ST_NOADAPTER);
     SDL_UnlockMutex(LOCK);
     SDL_Thread *scanner = SDL_CreateThread(scan_thread, "scan", &a);
+    if (intro && access(intro, F_OK) != 0) {                                      /* first run: tell the boot screen what to show as its last words, then play */
+        int bf = open("/run/wisp-bootscreen.fifo", O_WRONLY | O_NONBLOCK | O_CLOEXEC);      /* never blocks: with no boot screen (no reader) it simply fails */
+        if (bf >= 0) { static const char say[] = "status Getting ready for setup\ndetail This only happens the first time.\n"; (void)!write(bf, say, sizeof say - 1); close(bf); SDL_Delay(200); }
+        if (!handover_init(intro)) fprintf(stderr, "wisp-setup: no hand-over this time\n");
+    }
 
     char script_buf[2048] = {0}; char *tok = NULL, *save = NULL; Uint32 next_script = 0;
     if (script) { snprintf(script_buf, sizeof script_buf, "%s", script); tok = strtok_r(script_buf, " ", &save); }
@@ -709,7 +772,7 @@ int main(int argc, char **argv) {
         }
         SDL_LockMutex(LOCK); a.t = (SDL_GetTicks() - start) / 1000.0f; State st = a.st; int shot = a.shot_pending; a.shot_pending = 0;
         App snap = a; SDL_UnlockMutex(LOCK);                               /* draw from a copy: no lock held while SDL works */
-        render(&snap);
+        if (!handover_frame(&snap)) render(&snap);
         if (shots && shot) save_shot(&snap, shots, &seq, STATE_NAMES[st]);
         SDL_RenderPresent(R);
         if (st == ST_DONE) { SDL_Delay(shots ? 50 : 1500); break; }          /* online and Steam reachable: hand over */

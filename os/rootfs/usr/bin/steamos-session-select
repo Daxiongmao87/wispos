@@ -1,0 +1,3 @@
+#!/bin/sh
+# Steam's own name for the session switch (the SteamOS script): the same thing as wisp-session-select.
+exec /usr/bin/wisp-session-select "$@"

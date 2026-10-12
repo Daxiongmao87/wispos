@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Browser
+Exec=wisp-browser
+Icon=wisp-browser
+StartupWMClass=wisp-browser
+Categories=Network;WebBrowser;

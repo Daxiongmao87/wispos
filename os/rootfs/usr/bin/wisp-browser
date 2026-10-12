@@ -1,0 +1,55 @@
+#!/bin/sh
+# wisp-browser [URL...]: the desktop-mode browser. It is Firefox ESR, but it is not in the image: the first launch downloads the exact build pinned in /usr/share/wispos/browser.lock.json
+# (Mozilla's own aarch64 tarball, checked against its SHA-256), unpacks it under /storage/wispos/browser and writes the policies of /usr/lib/wispos/browser-policies.json next to it; every
+# later launch just starts it. A new WispOS release with a new lock replaces the old build (one version on the card at a time). The profile (/storage/wispos/browser/profile) survives that.
+# Progress and problems are shown as toasts by the desktop shell (wisp-dock --ctl toast), because this is started from the dock and has no terminal.
+# Environment (test seams; each has the production default): WISP_BROWSER_LOCK, WISP_BROWSER_ROOT, WISP_BROWSER_POLICIES, WISP_BROWSER_USERJS, WISP_BROWSER_DOCK, WISP_BROWSER_CURL,
+# WISP_BROWSER_MIN_MB (free space needed, 700).
+LOCK=${WISP_BROWSER_LOCK:-/usr/share/wispos/browser.lock.json}
+ROOT=${WISP_BROWSER_ROOT:-/storage/wispos/browser}
+POLICIES=${WISP_BROWSER_POLICIES:-/usr/lib/wispos/browser-policies.json}
+USERJS=${WISP_BROWSER_USERJS:-/usr/lib/wispos/browser-user.js}
+DOCK=${WISP_BROWSER_DOCK:-wisp-dock}
+CURL=${WISP_BROWSER_CURL:-curl}
+MIN_MB=${WISP_BROWSER_MIN_MB:-700}
+
+say() { "$DOCK" --ctl toast "Browser|$1|${2:-6}" >/dev/null 2>&1 || echo "wisp-browser: $1" >&2; }
+die() { say "$1" 8; echo "wisp-browser: $1" >&2; exit 1; }
+field() { sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$LOCK" | head -n 1; }
+
+version=$(field version); url=$(field url); sha=$(field sha256)
+[ -n "$version" ] && [ -n "$url" ] && [ -n "$sha" ] || die "The browser's lock file is incomplete ($LOCK)."
+dir=$ROOT/firefox-$version
+bin=$dir/firefox/firefox
+
+install_browser() {
+    mkdir -p "$ROOT" || die "Cannot write to the card ($ROOT)."
+    exec 9>"$ROOT/.lock"; flock -x 9                                            # one installer at a time: a second launch waits for the first and then finds it done
+    [ -f "$dir/.complete" ] && return 0
+    free_mb=$(df -m "$ROOT" 2>/dev/null | awk 'NR==2 {print $4}')
+    [ "${free_mb:-0}" -ge "$MIN_MB" ] || die "Not enough room on the card: the browser needs about $MIN_MB MB free."
+    "$CURL" -fsI --max-time 10 "$url" >/dev/null 2>&1 || die "No connection. Connect Wi-Fi (quick settings) and try the browser again."
+    say "Downloading Firefox, about 74 MB. This happens once." 10
+    rm -rf "$ROOT/.download" "$ROOT/.new"; mkdir -p "$ROOT/.download" "$ROOT/.new"
+    "$CURL" -fL --retry 3 --retry-delay 2 --connect-timeout 15 -o "$ROOT/.download/firefox.tar.xz" "$url" || { rm -rf "$ROOT/.download" "$ROOT/.new"; die "The download failed."; }
+    got=$(sha256sum "$ROOT/.download/firefox.tar.xz" | awk '{print $1}')
+    [ "$got" = "$sha" ] || { rm -rf "$ROOT/.download" "$ROOT/.new"; die "The download is not the browser that was expected (checksum mismatch). Nothing was installed."; }
+    say "Unpacking the browser..." 20
+    xz -dc "$ROOT/.download/firefox.tar.xz" | tar -xf - -C "$ROOT/.new" || { rm -rf "$ROOT/.download" "$ROOT/.new"; die "The browser could not be unpacked."; }
+    [ -x "$ROOT/.new/firefox/firefox" ] || { rm -rf "$ROOT/.download" "$ROOT/.new"; die "The browser's package is not what was expected."; }
+    mkdir -p "$ROOT/.new/firefox/distribution"
+    cp "$POLICIES" "$ROOT/.new/firefox/distribution/policies.json" || { rm -rf "$ROOT/.download" "$ROOT/.new"; die "Cannot write the browser's policies."; }
+    : > "$ROOT/.new/.complete"
+    rm -rf "$dir"; mv "$ROOT/.new" "$dir" || die "Cannot put the browser in place."
+    rm -rf "$ROOT/.download"
+    for old in "$ROOT"/firefox-*; do [ "$old" = "$dir" ] || rm -rf "$old"; done        # a release with a newer lock replaces the old build
+}
+
+[ -f "$dir/.complete" ] && [ -x "$bin" ] || install_browser
+[ -x "$bin" ] || die "The browser is not installed."
+
+mkdir -p "$ROOT/profile" /storage/downloads 2>/dev/null
+cmp -s "$USERJS" "$ROOT/profile/user.js" 2>/dev/null || cp "$USERJS" "$ROOT/profile/user.js"      # the card is written only when the preferences changed
+say "Starting the browser..." 15
+export MOZ_ENABLE_WAYLAND=1
+exec "$bin" --profile "$ROOT/profile" --class wisp-browser --name wisp-browser "$@"

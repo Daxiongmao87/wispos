@@ -1,0 +1,33 @@
+# wisp_trial: the bootloader half of the update trial (docs/WISPOS-UPDATE-DESIGN.md "Boot slots"). Run by boot_extlinux just before the kernel is loaded, for the boot partition
+# being scanned (${devtype} ${devnum}:${distro_bootpart}). Each non-comment line is a piece of one U-Boot command line (hush, the old parser); make_env.py joins them.
+#
+# WHAT IT IS FOR: the initramfs counts the starts of a version on trial, but only a kernel that gets as far as the initramfs can count. A new KERNEL that hangs or crashes early
+# would otherwise be started again at every power-on for ever. So U-Boot counts too: while the slot named by the first line of extlinux.conf is the one a trial marker (PENDING)
+# names, every start adds one to wispos/update/BOOTS (boot_tries=N); the initramfs of that slot deletes BOOTS as soon as it runs. When U-Boot finds BOOTS already at 2, the
+# new kernel has not reached its initramfs twice, and U-Boot starts the previous version from extlinux/rollback.conf (the same two labels, DEFAULT a): the previous version's
+# initramfs sees the marker for the other slot together with BOOTS and completes the bookkeeping (FAILED-<id>, the letter back to a, markers deleted).
+# It only ever READS extlinux.conf and PENDING and WRITES the small file BOOTS; any step that fails leaves the normal boot to carry on (nothing here can block a start).
+# The letter is byte 8 of the first line ("DEFAULT x"): 0x62 is b, anything else is read as a.
+if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} ${prefix}extlinux/extlinux.conf 9; then
+setexpr wisp_a ${scriptaddr} + 8;
+setexpr.b wisp_l *${wisp_a};
+if test ${wisp_l} = 62; then setenv wisp_next b; else setenv wisp_next a; fi;
+setenv slot;
+if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} ${prefix}wispos/update/PENDING 100; then
+env import -t ${scriptaddr} ${filesize} slot;
+if test ${slot}x = ${wisp_next}x; then
+setenv boot_tries 0;
+if load ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} ${prefix}wispos/update/BOOTS 20; then env import -t ${scriptaddr} ${filesize} boot_tries; fi;
+if test ${boot_tries}x = x; then setenv boot_tries 0; fi;
+if itest ${boot_tries} -ge 2; then
+echo wispos: the version on trial did not reach its initramfs twice - starting the previous version;
+sysboot ${devtype} ${devnum}:${distro_bootpart} any ${scriptaddr} ${prefix}extlinux/rollback.conf;
+else
+setexpr boot_tries ${boot_tries} + 1;
+env export -t -s 20 ${scriptaddr} boot_tries;
+fatwrite ${devtype} ${devnum}:${distro_bootpart} ${scriptaddr} ${prefix}wispos/update/BOOTS ${filesize};
+fi;
+fi;
+fi;
+fi;
+setenv wisp_a; setenv wisp_l; setenv wisp_next; setenv slot; setenv boot_tries

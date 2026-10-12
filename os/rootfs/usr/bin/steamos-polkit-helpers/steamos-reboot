@@ -1,0 +1,5 @@
+#!/bin/sh
+# steamos-reboot: the restart Steam's own UI asks for (after an OS update: "system restart required" and its Restart button; Steam's binaries name this helper, measured on the
+# device 2026-10-11, docs/WISPOS-NOTES.md). The staged update is applied by the boot itself (docs/WISPOS-UPDATE-DESIGN.md), so a plain restart is all this does. Whether this is the exact
+# name and call form Steam uses for the Restart button is to be confirmed on the device (device checklist): if Steam logs a different command, name it here.
+exec systemctl reboot

@@ -1,0 +1,15 @@
+# Ends the trial of a freshly updated system once it has started well (see /usr/lib/wispos/wisp-update-confirm, docs/WISPOS-UPDATE-DESIGN.md "Boot slots").
+# Only when the trial marker exists: an ordinary boot skips this unit and it costs nothing. If the system never comes up well the marker survives, and the initramfs sends the card
+# back to the previous system after the allowed number of unconfirmed starts.
+[Unit]
+Description=WispOS update trial: confirm that the new system started well
+ConditionPathExists=/flash/wispos/update/PENDING
+After=sway.service wisp-steam.service wisp-setup.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/wispos/wisp-update-confirm
+Nice=10
+
+[Install]
+WantedBy=wispos.target

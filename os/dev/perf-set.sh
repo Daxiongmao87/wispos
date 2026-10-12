@@ -82,6 +82,7 @@ save() {
 rm -f $FEXJ
 [ -f $FROZEN ] && kill -CONT \$(cat $FROZEN) 2>/dev/null
 systemctl stop wisp-dev-reclaim 2>/dev/null
+[ ! -e /storage/.config/wispos/ui-reclaim-off ] && systemctl start wisp-ui-reclaim 2>/dev/null     # the image's own daemon (enabled by default) was stopped for the experiment: back on
 rm -f $FROZEN $SAVED
 EOF2
 }
@@ -129,7 +130,7 @@ print('paged out: resident %d MB -> %d MB (%d processes)' % (before // 1024, aft
 PY
         free -m | sed -n 2p;;
     ui-reclaim-on) save; [ -x /run/wisp-dev/wisp-ui-reclaim ] || { echo "no /run/wisp-dev/wisp-ui-reclaim on the device (copy the aarch64 build there first)"; exit 1; }
-        systemctl stop wisp-dev-reclaim 2>/dev/null
+        systemctl stop wisp-dev-reclaim wisp-ui-reclaim 2>/dev/null          # the image's own daemon (enabled by default) would fight this one over the same cgroup
         systemd-run --quiet --unit=wisp-dev-reclaim --description="dev: UI reclaim" -E XDG_RUNTIME_DIR=/var/run/0-runtime-dir -E SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock /run/wisp-dev/wisp-ui-reclaim $RFREEZE || exit 1
         sleep 1; n=$(wc -l < /sys/fs/cgroup/unified/wisp-ui/cgroup.procs 2>/dev/null || echo 0)
         [ "$n" -ge 6 ] || echo "WARNING: only $n process(es) in the wisp-ui cgroup: the web helpers were not moved while young, so the ceiling has little to act on (restart Steam with the daemon already running)"

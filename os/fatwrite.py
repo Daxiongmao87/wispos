@@ -4,7 +4,7 @@
     fatwrite.py IMAGE_OR_PARTITION_OFFSET... see populate(); CLI: fatwrite.py IMG OFFSET SRC_DIR
 
 The filesystem must already exist (mkfs.fat) and be empty. This writer only knows what an image
-builder needs: directories and regular files laid out contiguously, 8.3 names plus VFAT long-name
+builder needs: directories (to any depth) and regular files laid out contiguously, 8.3 names plus VFAT long-name
 entries, no deletion, no fragmentation. Geometry (sector size, cluster size, FAT size, root
 cluster) is read from the boot sector that mkfs.fat wrote, so the result stays a normal FAT32
 volume: `fsck.fat -n` and a file-by-file comparison verify it (os/test_fatwrite.py).
@@ -100,16 +100,18 @@ class Fat32:
         self.f.write(data)
 
     def put_tree(self, directory, parent_cluster, own_cluster=None):
-        """Write `directory`'s children; returns the cluster of the directory itself."""
+        """Write `directory`'s children; returns the cluster of the directory itself. A directory that has sub-directories gets its own cluster BEFORE they are written (their ".."
+        entries name it); one that has none is allocated after its files, as it always was, so trees of one level lay out exactly as before."""
         children = sorted(directory.iterdir(), key=lambda p: p.name)
-        if parent_cluster is not None and any(c.is_dir() for c in children):
-            raise SystemExit('fatwrite: nesting deeper than one level is not supported')
+        is_root = own_cluster == self.root_cluster
+        if own_cluster is None and any(c.is_dir() for c in children):
+            own_cluster, _ = self.allocate(64 + sum(32 * (len(c.name) // 13 + 3) for c in children))
         taken, entries, pending = set(), [], []
         for child in children:
             short, lfn = short_name(child.name, taken)
             taken.add(short.decode('ascii'))
             if child.is_dir():
-                cluster = self.put_tree(child, self.root_cluster)
+                cluster = self.put_tree(child, own_cluster)
                 entries.append(dir_entries(child.name, short, lfn, ATTR_DIR, cluster, 0))
             else:
                 size = child.stat().st_size
@@ -121,10 +123,11 @@ class Fat32:
                             self.f.write(chunk)
                 entries.append(dir_entries(child.name, short, lfn, 0x20, cluster, size))
         body = b''.join(entries)
-        if own_cluster == self.root_cluster:
+        if is_root:
             body = self.root_prefix + body          # keep the volume-label entry mkfs.fat wrote
-        if own_cluster is None:
-            own_cluster, _ = self.allocate(len(body) + 64)
+        else:
+            if own_cluster is None:
+                own_cluster, _ = self.allocate(len(body) + 64)
             dots = (dir_entries('.', b'.          ', False, ATTR_DIR, own_cluster, 0) +
                     dir_entries('..', b'..         ', False, ATTR_DIR, 0 if parent_cluster in (None, self.root_cluster) else parent_cluster, 0))
             body = dots + body

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Exec=foot
+Icon=wisp-terminal
+StartupWMClass=foot
+Categories=System;TerminalEmulator;

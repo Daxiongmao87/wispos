@@ -1,0 +1,40 @@
+#!/bin/sh
+# wisp-desktop-session start|stop: the settings of the compositor that make it a desktop, applied when desktop mode starts and taken off when it ends (wisp-desktop.service).
+# sway is resident for both modes; Game mode's kiosk configuration (usr/share/sway/config.kiosk) stays the base, and these are runtime changes on top of it, so leaving desktop mode puts
+# the display back exactly as Game mode wants it. Both calls always succeed once sway is reachable: a setting that fails is logged, it does not keep the desktop from starting.
+#   start   native resolution (the dock and the keyboard are drawn for 720x480), the wallpaper, a pointer that does not hide, no focus-follows-mouse, and the pad's virtual devices set up
+#           the way wisp-pad needs them (a flat pointer, because the pad already shapes its own acceleration; the key repeat that the shell and applications read), and the keyboard's
+#           shortcuts to the shell (Super). The volume and brightness keys are not bound here: ROCKNIX's input service, kept in the image, handles them in both modes.
+#   stop    the display scale of Game mode, a black ground, the kiosk's pointer hiding, the shortcuts removed
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/var/run/0-runtime-dir}; SWAYSOCK=${SWAYSOCK:-$XDG_RUNTIME_DIR/sway-ipc.0.sock}; export SWAYSOCK
+SWAYMSG=${WISP_SWAYMSG:-swaymsg}; DISPLAY_TOOL=${WISP_DISPLAY_TOOL:-/usr/bin/wisp-display}; WALLPAPER=${WISP_WALLPAPER:-/usr/share/wispos/wallpaper.png}; OUT=${WISP_OUTPUT:-DSI-1}
+n=0; while [ ! -S "$SWAYSOCK" ] && [ "$n" -lt "${WISP_SWAY_WAIT:-50}" ]; do sleep 0.2; n=$((n + 1)); done
+[ -S "$SWAYSOCK" ] || { echo "wisp-desktop-session: sway's socket never appeared ($SWAYSOCK)" >&2; exit 1; }
+run() { "$SWAYMSG" "$1" >/dev/null || echo "wisp-desktop-session: sway refused: $1" >&2; }
+case "${1:-}" in
+    start)
+        "$DISPLAY_TOOL" native || echo "wisp-desktop-session: could not set the native resolution" >&2
+        run "output $OUT bg $WALLPAPER fill"
+        run "seat * hide_cursor 0"
+        run "focus_follows_mouse no"
+        run "input \"0:0:wisp-pad_mouse\" accel_profile flat"
+        run "input \"0:0:wisp-pad_mouse\" pointer_accel 0"
+        run "input \"0:0:wisp-pad_keyboard\" repeat_delay 350"
+        run "input \"0:0:wisp-pad_keyboard\" repeat_rate 25"
+        # the keyboard's way to the shell (the parity table of docs/WISPOS-OS-DESIGN.md "Browsing with the gamepad"): a lone Super opens the application menu, Super+D summons the dock,
+        # Super+S the quick settings, Super+K the on-screen keyboard, Super+A the browser's action list
+        run "bindsym --release Super_L exec wisp-dock --ctl menu"
+        run "bindsym Mod4+d exec wisp-dock --ctl summon"
+        run "bindsym Mod4+s exec wisp-dock --ctl qs"
+        run "bindsym Mod4+k exec wisp-dock --ctl osk"
+        run "bindsym Mod4+a exec wisp-dock --ctl actions" ;;
+    stop)
+        "$DISPLAY_TOOL" default || echo "wisp-desktop-session: could not restore the display scale" >&2
+        run "output $OUT bg #000000 solid_color"
+        run "seat * hide_cursor 1000"
+        run "focus_follows_mouse yes"
+        run "unbindsym --release Super_L"
+        for k in d s k a; do run "unbindsym Mod4+$k"; done ;;
+    *) echo "usage: wisp-desktop-session start|stop" >&2; exit 2 ;;
+esac
+exit 0

@@ -1,0 +1,17 @@
+# Desktop mode (docs/WISPOS-OS-DESIGN.md "Desktop mode"). Started by wisp-session-select (the dock's Game mode counterpart, Steam's "Switch to Desktop"), never at boot: the device starts in Game mode.
+# One mode at a time: Conflicts= with Steam's unit in both directions (wisp-steam.service names this one), so starting either stops the other, and everything that was started for the mode
+# being left (each program started from the dock is in wisp-dock.service's control group) ends with it, which hands the memory back.
+# This unit only applies the compositor's desktop settings (wisp-desktop-session) and holds the mode; the pad daemon and the shell are PartOf it and start after it.
+[Unit]
+Description=WispOS desktop mode
+Conflicts=wisp-steam.service
+After=sway.service wisp-steam.service
+Requires=sway.service
+Wants=wisp-pad.service wisp-dock.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=XDG_RUNTIME_DIR=/var/run/0-runtime-dir SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
+ExecStart=/usr/lib/wispos/wisp-desktop-session start
+ExecStop=/usr/lib/wispos/wisp-desktop-session stop

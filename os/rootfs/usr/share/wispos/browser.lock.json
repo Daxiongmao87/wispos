@@ -1,0 +1,9 @@
+{
+  "name": "Firefox ESR",
+  "version": "153.4.0esr",
+  "url": "https://archive.mozilla.org/pub/firefox/releases/153.4.0esr/linux-aarch64/en-US/firefox-153.4.0esr.tar.xz",
+  "sha256": "4939871d53f63b7c0c127986af3779e9a134fad4b6abee2b4aa9cefc0bfc5b3d",
+  "size": 73914588,
+  "unpacked_mb": 280,
+  "source": "https://archive.mozilla.org/pub/firefox/releases/153.4.0esr/SHA256SUMS (2026-10-12)"
+}

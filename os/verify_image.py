@@ -120,9 +120,27 @@ def main(image, work):
     else:
         check('release image carries no keys, credentials, dev config or dev marker on the boot partition', shipped == ['README.txt', 'wifi.conf.example'], shipped)
     conf = (extract / 'extlinux/extlinux.conf').read_text()
-    check('extlinux names files that exist', all((extract / p.lstrip('/')).is_file() for p in re.findall(r'^\s*(?:LINUX|FDT|FDTOVERLAYS)\s+(\S+)', conf, re.M)))
+    labels = re.findall(r'^LABEL (\S+)\n((?:[ \t]+.*\n)+)', conf, re.M)
+    by_label = {name: dict(re.findall(r'^[ \t]+(\w+)[ \t]+(.*)$', body, re.M)) for name, body in labels}
+    default = (extract / 'extlinux/extlinux.conf').read_bytes().split(b'\n', 1)[0]
+    check('extlinux.conf starts with exactly "DEFAULT a" (the first line the update scheme flips in place) and has the labels a and b',
+          default == b'DEFAULT a' and sorted(by_label) == ['a', 'b'], (default, sorted(by_label)))
+    ok_slots = sorted(by_label) == ['a', 'b'] and all(by_label[x].get('APPEND', '').split()[-1:] == ['wisp.slot=' + x] for x in 'ab')
+    check('each label carries its own slot (wisp.slot=a|b); slot a is /KERNEL, slot b is /wispos/b/KERNEL; both share the device tree and overlay',
+          ok_slots and by_label['a'].get('LINUX') == '/KERNEL' and by_label['b'].get('LINUX') == '/wispos/b/KERNEL'
+          and all(by_label['a'].get(k) == by_label['b'].get(k) for k in ('FDT', 'FDTOVERLAYS')), by_label)
+    check('everything the DEFAULT label names exists (slot b is empty until the first update; the shared device tree and overlay are there)',
+          'a' in by_label and all((extract / by_label['a'].get(k, '/nonexistent').lstrip('/')).is_file() for k in ('LINUX', 'FDT', 'FDTOVERLAYS')), by_label.get('a'))
+    check('slot b and the update directory are absent on the shipped card (an update creates them)', not (extract / 'wispos/b').exists() and not (extract / 'wispos/update').exists())
+    strip = lambda d: {k: v.replace('wisp.slot=a', '').replace('wisp.slot=b', '') for k, v in d.items() if k != 'LINUX'}
+    check('the two labels differ in nothing but the kernel path and the slot', ok_slots and strip(by_label['a']) == strip(by_label['b']))
+    rb = (extract / 'extlinux/rollback.conf'); rb_text = rb.read_text() if rb.is_file() else ''
+    check('extlinux/rollback.conf exists, starts with "DEFAULT a" and is otherwise identical to extlinux.conf (the bootloader starts it after two starts of a new kernel that never reached its initramfs)',
+          rb.is_file() and rb_text.split('\n', 1)[0] == 'DEFAULT a' and rb_text.split('\n', 1)[1:] == conf.split('\n', 1)[1:], rb_text[:120])
+    check('the kernel restarts itself after a panic (panic=10), so a version on trial that panics is counted and rolled back without a finger on Power',
+          len(by_label) == 2 and all('panic=10' in v.get('APPEND', '').split() for v in by_label.values()), {k: v.get('APPEND') for k, v in by_label.items()})
     check('extlinux boot=/disk= labels are the ones on the volumes',
-          'boot=LABEL=ROCKNIX' in conf and 'disk=LABEL=STORAGE' in conf)
+          len(by_label) == 2 and all('boot=LABEL=ROCKNIX' in v.get('APPEND', '') and 'disk=LABEL=STORAGE' in v.get('APPEND', '') for v in by_label.values()))
 
     kernel_head = (extract / 'KERNEL').read_bytes()[:64]
     check('KERNEL is an arm64 Image (ARMd magic, little-endian, 4K pages)', kernel_head[56:60] == b'ARMd' and (struct.unpack_from('<Q', kernel_head, 24)[0] & 0b0111) == 0b0010)

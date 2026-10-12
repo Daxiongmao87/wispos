@@ -22,10 +22,19 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import accounts
 
-# OS_VERSION keeps ROCKNIX's YYYYMMDD form: usbgadget derives the USB device version from its bytes 3-6.
+# OS_VERSION keeps ROCKNIX's YYYYMMDD form: the tools that read it (rocknix-info) parse that shape.
 OS_RELEASE_OVERRIDES = {'OS_NAME': 'WispOS', 'OS_VERSION': '20261007', 'OS_BUILD': 'wispos',
                         'HOME_URL': ''}
-WISPOS_VERSION = '0.1.0-dev'
+LOCKFILE = Path(os.environ.get('WISP_LOCKFILE', HERE.parent / 'manifest' / 'lockfile.json'))      # the override is for tests
+
+
+def lockfile():
+    """manifest/lockfile.json, the authoritative version of the image (AGENTS.md, "Versioning and changelog"): `version` (SemVer) and, once a release candidate is being built,
+    `build_id` (YYYYMMDD.N). Read when used (a test points LOCKFILE elsewhere); a malformed one stops the build."""
+    lock = json.loads(LOCKFILE.read_text())
+    if not re.fullmatch(r'\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?', str(lock.get('version', ''))): raise SystemExit(f'{LOCKFILE}: version must look like 0.1.0, not {lock.get("version")!r}')
+    if lock.get('build_id') is not None and not re.fullmatch(r'\d{8}\.\d+', str(lock['build_id'])): raise SystemExit(f'{LOCKFILE}: build_id must look like 20261012.1, not {lock["build_id"]!r}')
+    return lock
 
 
 def size_of(path):
@@ -73,6 +82,8 @@ def install_kernel(tree, kernel_out):
 def overlay(tree, source):
     """Copy files and symlinks from `source` over `tree`, keeping modes; directories are merged."""
     for src in sorted(source.rglob('*')):
+        if '__pycache__' in src.relative_to(source).parts or src.suffix == '.pyc':
+            continue                           # host bytecode written next to a script by a test run: never part of an image
         dst = tree / src.relative_to(source)
         if src.is_symlink():
             if dst.is_symlink() or dst.exists():
@@ -137,6 +148,23 @@ def install_steamos_manager(tree, binary):
         (share / 'update.conf').write_text(json.dumps({'manifest_url': url}) + '\n'); shutil.copyfile(key, share / 'update-key.pub')
 
 
+def install_pad(tree, binary):
+    """The gamepad daemon for desktop mode (os/pad/); its unit comes with the overlay and is started by the switch to desktop."""
+    shutil.copyfile(binary, tree / 'usr/bin/wisp-pad'); (tree / 'usr/bin/wisp-pad').chmod(0o755)
+
+
+def install_dock(tree, binary):
+    """The desktop-mode shell (os/dock/) and the wallpaper it sits on; its unit, the desktop entries and the scripts come with the overlay."""
+    shutil.copyfile(binary, tree / 'usr/bin/wisp-dock'); (tree / 'usr/bin/wisp-dock').chmod(0o755)
+    share = tree / 'usr/share/wispos'; share.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(HERE / 'dock/design/wallpaper.png', share / 'wallpaper.png'); (share / 'wallpaper.png').chmod(0o644)
+
+
+def install_bootscreen(tree, binary):
+    """The Wayland phase of the boot screen (os/splash/wisp-bootscreen.c); its unit comes with the overlay."""
+    shutil.copyfile(binary, tree / 'usr/bin/wisp-bootscreen'); (tree / 'usr/bin/wisp-bootscreen').chmod(0o755)
+
+
 def install_ui_reclaim(tree, binary):
     """The Steam UI's memory ceiling daemon (os/reclaim/); its unit comes with the overlay."""
     shutil.copyfile(binary, tree / 'usr/bin/wisp-ui-reclaim'); (tree / 'usr/bin/wisp-ui-reclaim').chmod(0o755)
@@ -148,6 +176,16 @@ def install_ui_reclaim(tree, binary):
 # libcurl needs libbrotli and libssh2, libavcodec/libavutil need libva and libvdpau, libpulsecommon needs libasyncns. The other 24
 # packages in that lock were for the old ROCKNIX root and are not needed here.
 STEAM_LIB_PACKAGES = ('libibus-1.0-5', 'libasyncns0', 'libbrotli1', 'libssh2-1t64', 'libva2', 'libvdpau1')
+
+
+def install_usb_host_bench(tree):
+    """The record that USB host mode passed its bench tests (docs/WISPOS-OS-DESIGN.md, spike S-USB). Operator rule, 2026-10-11: the host toggle ships in a release only after the bench
+    test (an OTG adapter, external power appearing, 10 plug cycles, a USB-C meter) passed and its result is written in that document. WISP_USB_HOST_BENCH names the record (one line, e.g.
+    'T1-T4 passed 2026-10-20, docs/WISPOS-OS-DESIGN.md "Phase 2 results"'); without it the image carries no marker, check_release.py reports a gap and make-release.py refuses."""
+    ref = os.environ.get('WISP_USB_HOST_BENCH', '').strip()
+    if not ref: return
+    share = tree / 'usr/share/wispos'; share.mkdir(parents=True, exist_ok=True)
+    (share / 'usb-host-bench').write_text(ref + '\n')
 
 
 def install_steam_installer(tree, debs_dir):
@@ -224,12 +262,14 @@ OS_RELEASE_DROPPED = {'GIT_ORGANIZATION', 'GIT_REPO'}
 
 
 def build_id():
-    """The image's build id, comparable like a version number ("20261012.1"; Atomupd1 compares them). The release process supplies WISP_BUILD_ID; a local build gets the build date
-    (SOURCE_DATE_EPOCH, which pins reproducibility) with sequence 0."""
+    """The image's build id, comparable like a version number ("20261012.1"; the update scheme compares them). In order: WISP_BUILD_ID (the release process), the lockfile's
+    build_id (the release candidate being built), else the build date (SOURCE_DATE_EPOCH, which pins reproducibility) with sequence 0."""
     given = os.environ.get('WISP_BUILD_ID')
     if given:
         if not re.fullmatch(r'\d{8}\.\d+', given): raise SystemExit(f'WISP_BUILD_ID must look like 20261012.1, not {given!r}')
         return given
+    locked = lockfile().get('build_id')
+    if locked: return locked
     return time.strftime('%Y%m%d', time.gmtime(int(os.environ.get('SOURCE_DATE_EPOCH', '0')))) + '.0'
 
 
@@ -237,14 +277,15 @@ def rebrand(tree):
     """WispOS's identity in /etc/os-release: the standard keys (NAME, ID, PRETTY_NAME, VERSION_ID, BUILD_ID) are ours, so the update interface and `lsb_release` agree on one
     version and one build id; ROCKNIX's own keys that its remaining scripts read (OS_NAME, OS_VERSION, HW_*) stay, relabelled; its upstream coordinates go."""
     path = tree / 'etc/os-release'
-    standard = {'NAME': 'WispOS', 'ID': 'wispos', 'PRETTY_NAME': f'WispOS {WISPOS_VERSION}', 'VERSION_ID': WISPOS_VERSION, 'BUILD_ID': build_id()}
+    version = lockfile()['version']
+    standard = {'NAME': 'WispOS', 'ID': 'wispos', 'PRETTY_NAME': f'WispOS {version}', 'VERSION_ID': version, 'BUILD_ID': build_id()}
     out = []
     for line in path.read_text().splitlines():
         key = line.split('=', 1)[0]
         if key in OS_RELEASE_DROPPED or key in standard: continue
         out.append(f'{key}="{OS_RELEASE_OVERRIDES[key]}"' if key in OS_RELEASE_OVERRIDES else line)
     out += [f'{k}="{v}"' for k, v in standard.items()]
-    out.append(f'WISPOS_VERSION="{WISPOS_VERSION}"')
+    out.append(f'WISPOS_VERSION="{version}"')
     path.write_text('\n'.join(out) + '\n')
 
 
@@ -299,6 +340,10 @@ def main(tree, kernel_out, mode='full'):
     install_setup(tree, os.environ['WISP_SETUP_BIN'])
     install_steamos_manager(tree, os.environ['WISP_STEAMOS_MANAGER_BIN'])
     install_ui_reclaim(tree, os.environ['WISP_UI_RECLAIM_BIN'])
+    install_pad(tree, os.environ['WISP_PAD_BIN'])
+    install_dock(tree, os.environ['WISP_DOCK_BIN'])
+    install_bootscreen(tree, os.environ['WISP_BOOTSCREEN_BIN'])
+    install_usb_host_bench(tree)
     install_steam_installer(tree, os.environ['WISP_STEAM_DEBS'])
     install_official_fex(tree, os.environ['WISP_OFFICIAL_FEX_DEB'])
     install_sway_default_config(tree)

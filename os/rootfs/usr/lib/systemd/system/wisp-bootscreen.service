@@ -1,0 +1,21 @@
+# The Wayland phase of the boot screen (docs/WISPOS-SPLASH-DESIGN.md): the framebuffer splash of the initramfs is hidden the moment the compositor takes the display, and without this the
+# panel is black from then until Steam's or the setup screen's first window (up to ~100 s). This draws the same screen as a full-output overlay, takes the same status lines
+# (wisp-splash-say), SELECT opens the live boot log, and it ENDS BY ITSELF the moment any window appears (or on `done`, or after a ceiling of 20 minutes), so it can never cover the real UI.
+# Type=notify: READY=1 once its first frame is on the screen, and the units after it start then (they are ordered after it, not dependent on it: if it cannot run they go on).
+# `wisp.splash=off` on the kernel command line turns it off like it turns off the splash.
+[Unit]
+Description=WispOS boot screen (Wayland phase)
+After=sway.service
+Wants=sway.service
+Before=wisp-setup.service wisp-steam.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+Environment=XDG_RUNTIME_DIR=/var/run/0-runtime-dir WAYLAND_DISPLAY=wayland-1
+ExecStart=/usr/bin/wisp-bootscreen --status "Starting WispOS"
+TimeoutStartSec=40
+Restart=no
+
+[Install]
+WantedBy=wispos.target

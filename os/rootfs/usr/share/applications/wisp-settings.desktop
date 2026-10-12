@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Exec=wisp-dock --ctl qs
+Icon=wisp-settings
+Categories=Settings;

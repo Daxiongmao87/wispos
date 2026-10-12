@@ -16,6 +16,7 @@ out=/tmp/wisp-last-boot.txt
     ls /sys/class/backlight 2>&1 | head -3
     echo; echo "== power"; for p in /sys/class/power_supply/*; do echo "$p $(cat "$p/status" 2>/dev/null) $(cat "$p/capacity" 2>/dev/null)%"; done 2>/dev/null
     echo; echo "== memory"; head -3 /proc/meminfo; cat /proc/swaps
+    echo; echo "== update slots (docs/WISPOS-UPDATE-DESIGN.md)"; /usr/lib/wispos/wisp-update status 2>&1 | head -12; head -n 1 /flash/extlinux/extlinux.conf 2>&1
     echo; echo "== session"; systemctl status wisp-steam --no-pager 2>&1 | head -8
     echo; echo "== display server (sway) and first-run setup, this boot"; journalctl -b -u sway -u wisp-setup --no-pager -n 80 2>&1 | cut -c1-220
     echo; echo "== setup and installer state"; systemctl status wisp-setup --no-pager 2>&1 | head -8; ls -la /storage/wispos/runtime 2>&1 | head -8; df -h /storage 2>&1 | tail -1

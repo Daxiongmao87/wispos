@@ -53,6 +53,9 @@ for patch in "$SRC/projects/ROCKNIX/devices/H700/packages/u-boot-DDR3/patches/"*
     patch -d "$BUILD/uboot" -p1 --no-backup-if-mismatch -s <"$patch"
 done
 cp "$SRC/projects/ROCKNIX/devices/H700/packages/u-boot-DDR3/sources/configs/"*_defconfig "$BUILD/uboot/configs/"
+# WispOS's own addition: the boot-trial script that counts the starts of a version on trial BEFORE its kernel runs (os/boot/uboot/wisp-trial.txt; install_env.py refuses a tree it
+# was not written for).
+python3 -I "$(dirname "${BASH_SOURCE[0]}")/uboot/install_env.py" "$BUILD/uboot"
 # Fixed timestamp so two builds of the same inputs are identical (ROCKNIX's release stamp).
 export SOURCE_DATE_EPOCH=$(date -u -d '2026-10-01 18:31:19' +%s)
 # SWIG 4.5 no longer maps Python 2 names that U-Boot's libfdt.i still uses; this only affects the
@@ -63,5 +66,12 @@ cd "$BUILD/uboot"
 { make mrproper; make HOSTCC=gcc HOSTCFLAGS="$HOSTFLAGS" anbernic_rg35xx_h700_lpddr3_defconfig
   make -j"$(nproc)" HOSTCC=gcc HOSTCFLAGS="$HOSTFLAGS" BL31="$BUILD/atf/build/sun50i_h616/release/bl31.bin" \
        HOSTSTRIP=true CONFIG_MKIMAGE_DTC_PATH=scripts/dtc/dtc; } >"$BUILD/uboot-build.log" 2>&1
+# The boot-trial hook must really be in the bootloader's DEFAULT environment (what it starts with when no environment is stored): the two variables, once each.
+make -j"$(nproc)" HOSTCC=gcc HOSTCFLAGS="$HOSTFLAGS" BL31="$BUILD/atf/build/sun50i_h616/release/bl31.bin" HOSTSTRIP=true CONFIG_MKIMAGE_DTC_PATH=scripts/dtc/dtc u-boot-initial-env >>"$BUILD/uboot-build.log" 2>&1
+[ "$(grep -c '^wisp_trial=' u-boot-initial-env)" = 1 ] && [ "$(grep -c '^boot_extlinux=run wisp_trial; sysboot ' u-boot-initial-env)" = 1 ] \
+    || { echo "build-uboot: the boot-trial hook is not in the bootloader's default environment (see $BUILD/uboot/u-boot-initial-env)" >&2; exit 1; }
+# The default environment is imported in order and a later definition replaces an earlier one, so ours must come AFTER the distro boot's own boot_extlinux.
+[ "$(grep -n '^boot_extlinux=sysboot ' u-boot-initial-env | head -1 | cut -d: -f1)" -lt "$(grep -n '^boot_extlinux=run wisp_trial' u-boot-initial-env | cut -d: -f1)" ] \
+    || { echo "build-uboot: the boot-trial boot_extlinux comes before the distro boot's own and would be replaced by it" >&2; exit 1; }
 install -m 644 u-boot-sunxi-with-spl.bin "$OUT/u-boot-sunxi-with-spl.bin"
 sha256sum "$OUT/u-boot-sunxi-with-spl.bin" | tee "$OUT/u-boot-sunxi-with-spl.bin.sha256"

@@ -1,0 +1,13 @@
+#!/bin/sh
+# wisp-session-select desktop|game: switch between desktop mode and Game mode (Steam). The one place both ways go through:
+#   - the dock's Game mode item and the application menu's Game mode tile run it with `game`;
+#   - Steam's "Switch to Desktop" reaches it through the SteamOS manager (SessionManagement1, os/steamos/wisp-steamos-manager.c) or, on a Steam that still runs the script, as
+#     /usr/bin/steamos-session-select with the session names SteamOS uses (plasma, gamescope ...), which are accepted as the names of the two modes.
+# It queues the switch and returns: the unit of the mode being left is stopped by systemd (Conflicts=), and that is the very session this may have been called from.
+# A mode switch frees the memory of the other mode (one mode at a time on a 1 GiB handheld): every program started from the desktop shell lives in its service's control group and ends with it.
+case "${1:-}" in
+    desktop|plasma|desktop-wayland|wispos|wispos-desktop) unit=wisp-desktop.service ;;
+    game|gamescope|gamescope-wayland|steam|gamemode) unit=wisp-steam.service ;;
+    *) echo "usage: wisp-session-select desktop|game" >&2; exit 2 ;;
+esac
+exec "${WISP_SYSTEMCTL:-systemctl}" start --no-block "$unit"

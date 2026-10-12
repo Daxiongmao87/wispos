@@ -1,8 +1,9 @@
 """Offline checks on the files baked into the WispOS rootfs and on the bootloader build script."""
-import configparser, json, os, subprocess, unittest, unittest.mock
+import configparser, json, os, shutil, subprocess, tempfile, unittest, unittest.mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+WORK = Path(os.environ.get('WISP_WORK', '/mnt/hdd/wispos-staging/wispos-os-20261007'))
 
 
 class RootfsTests(unittest.TestCase):
@@ -218,6 +219,20 @@ class KernelBuildScriptTests(unittest.TestCase):
         self.assertEqual(order, sorted(order))
         self.assertIn('set -euo pipefail', self.TEXT)
 
+    def test_wispos_patches_come_after_rocknix_ones_and_stop_the_build_when_they_do_not_apply(self):
+        self.assertLess(self.TEXT.index('devices/$DEV/patches/linux"/*.patch'), self.TEXT.index('"$HERE"/patches/*.patch'))
+        self.assertIn('patch -d "$K" -p1 <"$p"', self.TEXT)          # under `set -e`: a failing patch ends the build
+        self.assertTrue(sorted((HERE / 'boot/patches').glob('*.patch')))
+
+    def test_the_host_role_gate_patch_says_what_it_is_and_applies_to_the_tree_it_was_made_for(self):
+        patch = HERE / 'boot/patches/0001-phy-sun4i-usb-host-gate.patch'; text = patch.read_text()
+        for needle in ('host_enable', 'READ_ONCE(data->host_enable)', 'External vbus detected', 'dev_groups = sun4i_usb_phy_groups', 'NOT yet exercised on the hardware'):
+            self.assertIn(needle, text)
+        tree = WORK / 'build/linux'                                    # the kernel tree of the last build, when there is one
+        if not (tree / 'drivers/phy/allwinner/phy-sun4i-usb.c').exists(): self.skipTest('no built kernel tree on this host')
+        def dry(*flags): return _sp.run(['patch', '--dry-run', '-p1', '-d', str(tree), *flags], input=text, capture_output=True, text=True).returncode == 0
+        self.assertTrue(dry() or dry('-R'), 'the patch neither applies to nor is already applied in the kernel tree')
+
     def test_settings_that_make_the_build_match_the_reference(self):
         for needle in ('gzip -n -9', 'olddefconfig', 'DTC_FLAGS=-@', 'DEVICE=$DEV', 'KBUILD_BUILD_TIMESTAMP', 'CONFIG_EXTRA_FIRMWARE'):
             self.assertIn(needle, self.TEXT)
@@ -294,6 +309,21 @@ class StageRootfsTests(unittest.TestCase):
         self.assertEqual(_os.readlink(root / 'usr/lib/x.target.wants/a.service'), '../a.service')
         self.assertFalse(Path('/storage/elsewhere').exists())
 
+    def test_the_usb_host_bench_record_is_baked_only_when_the_build_names_it(self):
+        root = self.tree()
+        with unittest.mock.patch.dict(_os.environ, {'WISP_USB_HOST_BENCH': ''}): stage_rootfs.install_usb_host_bench(root)
+        self.assertFalse((root / 'usr/share/wispos/usb-host-bench').exists())
+        with unittest.mock.patch.dict(_os.environ, {'WISP_USB_HOST_BENCH': ' T1-T4 passed 2026-10-20 '}): stage_rootfs.install_usb_host_bench(root)
+        self.assertEqual((root / 'usr/share/wispos/usb-host-bench').read_text(), 'T1-T4 passed 2026-10-20\n')
+
+    def test_overlay_never_copies_host_python_bytecode(self):
+        root, src = self.tree(), Path(_tf.mkdtemp(prefix='wispos-overlay-'))
+        (src / 'usr/bin/__pycache__').mkdir(parents=True); (src / 'usr/bin/__pycache__/tool.cpython-312.pyc').write_bytes(b'\0')
+        (src / 'usr/bin/tool').write_text('#!/bin/sh\n'); (src / 'usr/bin/stray.pyc').write_bytes(b'\0')
+        stage_rootfs.overlay(root, src)
+        self.assertTrue((root / 'usr/bin/tool').is_file())
+        self.assertFalse((root / 'usr/bin/__pycache__').exists()); self.assertFalse((root / 'usr/bin/stray.pyc').exists())
+
     def test_sshd_settings_go_first_and_os_release_is_rebranded(self):
         root = self.tree(); (root / 'etc/ssh').mkdir(parents=True)
         (root / 'etc/ssh/sshd_config').write_text('PasswordAuthentication no\nPort 22\n')
@@ -303,21 +333,30 @@ class StageRootfsTests(unittest.TestCase):
         self.assertFalse((root / 'etc/ssh/sshd_config.wisp').exists())
         (root / 'etc/os-release').write_text('OS_NAME="ROCKNIX"\nOS_VERSION="1"\nHW_DEVICE="H700"\nHOME_URL="https://x"\nGIT_ORGANIZATION="ROCKNIX"\nGIT_REPO="distribution"\n'
                                              'BUILD_ID="c445081a59518f37d9776e5412dd7b14910696f7"\n')
-        with unittest.mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': '1790879479'}, clear=False):          # 2026-10-01
-            os.environ.pop('WISP_BUILD_ID', None); stage_rootfs.rebrand(root)
-        text = (root / 'etc/os-release').read_text()
+        lock_dir = Path(tempfile.mkdtemp(prefix='wispos-lock-', dir=os.environ.get('TMPDIR'))); self.addCleanup(shutil.rmtree, lock_dir, True)
+        def with_lock(content, env=None):
+            lock = lock_dir / 'lockfile.json'; lock.write_text(content)
+            (root / 'etc/os-release').write_text('OS_NAME="ROCKNIX"\nOS_VERSION="1"\nHW_DEVICE="H700"\nHOME_URL="https://x"\nGIT_ORGANIZATION="ROCKNIX"\nGIT_REPO="distribution"\n'
+                                                 'BUILD_ID="c445081a59518f37d9776e5412dd7b14910696f7"\n')
+            with unittest.mock.patch.object(stage_rootfs, 'LOCKFILE', lock), unittest.mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': '1790879479', **(env or {})}, clear=False):   # 2026-10-01
+                if not env or 'WISP_BUILD_ID' not in env: os.environ.pop('WISP_BUILD_ID', None)
+                stage_rootfs.rebrand(root)
+            return (root / 'etc/os-release').read_text()
+        text = with_lock('{"version": "0.3.4"}')                         # no build id in the lockfile: the pinned build date, sequence 0
         self.assertIn('OS_NAME="WispOS"', text); self.assertIn('HW_DEVICE="H700"', text); self.assertNotIn('ROCKNIX', text); self.assertNotIn('GIT_REPO', text)
-        self.assertRegex(text, r'OS_VERSION="\d{8}"')                # usbgadget parses bytes 3-6 as a hex version
-        self.assertIn('WISPOS_VERSION="0.1.0-dev"', text); self.assertIn('VERSION_ID="0.1.0-dev"', text)
+        self.assertRegex(text, r'OS_VERSION="\d{8}"')                # ROCKNIX's tools parse this shape
+        self.assertIn('WISPOS_VERSION="0.3.4"', text); self.assertIn('VERSION_ID="0.3.4"', text); self.assertIn('PRETTY_NAME="WispOS 0.3.4"', text)       # the version comes from the lockfile
         self.assertIn('NAME="WispOS"', text); self.assertIn('ID="wispos"', text)
         self.assertIn('BUILD_ID="20261001.0"', text); self.assertNotIn('c445081a', text)                       # one build id, ours; ROCKNIX's git hash is gone
         self.assertEqual(text.count('BUILD_ID='), 1)
-        with unittest.mock.patch.dict(os.environ, {'WISP_BUILD_ID': '20261012.1'}):
-            (root / 'etc/os-release').write_text('OS_NAME="x"\nBUILD_ID="y"\n'); stage_rootfs.rebrand(root)
-            self.assertIn('BUILD_ID="20261012.1"', (root / 'etc/os-release').read_text())
+        self.assertIn('BUILD_ID="20261012.3"', with_lock('{"version": "0.3.4", "build_id": "20261012.3"}'))   # the release candidate's build id, from the lockfile
+        self.assertIn('BUILD_ID="20261020.1"', with_lock('{"version": "0.3.4", "build_id": "20261012.3"}', {'WISP_BUILD_ID': '20261020.1'}))       # the release process may still override it
         with unittest.mock.patch.dict(os.environ, {'WISP_BUILD_ID': 'tuesday'}):
             with self.assertRaises(SystemExit): stage_rootfs.build_id()                                          # a build id that cannot compare like a version is refused
-
+        for bad in ('{}', '{"version": "latest"}', '{"version": "0.1"}', '{"version": "0.1.0", "build_id": "tuesday"}', '{"version": "0.1.0", "build_id": 5}'):
+            with self.assertRaises(SystemExit, msg=bad): with_lock(bad)                                          # a malformed lockfile stops the build
+        real = stage_rootfs.lockfile()                                    # and the lockfile in the repository is a valid one
+        self.assertRegex(real['version'], r'^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$'); self.assertRegex(real.get('build_id') or '20261001.0', r'^\d{8}\.\d+$')
 
     def test_the_setup_unit_starts_the_session_itself_and_sway_always_has_a_config(self):
         # Seen on the handheld: wisp-setup failed once (sway had crashed on its first start) and restarted; wisp-steam, ordered after
@@ -791,6 +830,13 @@ class CheckRootfsTests(unittest.TestCase):
         self.assertEqual(check_rootfs.wants_report(root), ['usr/lib/systemd/system/w.target.wants/gone.service'])
         self.assertIn('default.target -> wispos.target', check_rootfs.contract_report(root))
 
+    def test_host_bytecode_in_our_directories_is_a_finding_but_the_interpreters_own_is_not(self):
+        root = Path(_tf.mkdtemp(prefix='wispos-check-'))
+        (root / 'usr/lib/python3.14/__pycache__').mkdir(parents=True)                 # the image's own Python: legitimate
+        self.assertFalse([m for m in check_rootfs.contract_report(root) if 'bytecode' in m])
+        (root / 'usr/bin/__pycache__').mkdir(parents=True)
+        self.assertIn('MUST NOT CONTAIN usr/bin/__pycache__ (host Python bytecode)', check_rootfs.contract_report(root))
+
     def test_an_always_on_root_shell_is_a_finding_and_the_prune_list_removes_it(self):
         root = Path(_tf.mkdtemp(prefix='wispos-check-')); wants = root / 'usr/lib/systemd/system/sysinit.target.wants'; wants.mkdir(parents=True)
         (wants / 'debug-shell.service').symlink_to('../debug-shell.service')          # a dangling link still counts: it is the ENABLEMENT that is the problem
@@ -1110,6 +1156,22 @@ class SplashWiringTests(unittest.TestCase):
         finally:
             os.close(rd)
 
+    def test_say_reaches_both_screens_ready_only_the_framebuffer_and_done_only_the_wayland_one(self):
+        import os, tempfile
+        d = Path(tempfile.mkdtemp(prefix='wispos-say-', dir=os.environ.get('TMPDIR'))); fb, wl = d / 'fb', d / 'wl'; os.mkfifo(fb); os.mkfifo(wl)
+        rf, rw = os.open(fb, os.O_RDWR | os.O_NONBLOCK), os.open(wl, os.O_RDWR | os.O_NONBLOCK)
+        def say(*args): return subprocess.run(['sh', str(self.SAY), *args], capture_output=True, text=True, timeout=5, env={**os.environ, 'WISP_SPLASH_FIFO': str(fb), 'WISP_BOOTSCREEN_FIFO': str(wl)})
+        def drain(fd):
+            try: return os.read(fd, 4096)
+            except BlockingIOError: return b''
+        try:
+            self.assertEqual(say('Starting Steam').returncode, 0); self.assertEqual((drain(rf), drain(rw)), (b'status Starting Steam\n',) * 2)
+            self.assertEqual(say('--fail', 'No display').returncode, 0); self.assertEqual((drain(rf), drain(rw)), (b'fail No display\n',) * 2)
+            self.assertEqual(say('--ready').returncode, 0); self.assertEqual((drain(rf), drain(rw)), (b'ready\n', b''))             # the framebuffer splash only: `ready` would end the Wayland screen
+            self.assertEqual(say('--done').returncode, 0); self.assertEqual((drain(rf), drain(rw)), (b'', b'done\n'))
+        finally:
+            os.close(rf); os.close(rw)
+
     def test_say_never_blocks_or_fails(self):
         import os, tempfile
         d = Path(tempfile.mkdtemp(prefix='wispos-say-', dir=os.environ.get('TMPDIR')))
@@ -1147,6 +1209,52 @@ class SplashWiringTests(unittest.TestCase):
         self.assertIn('quiet', rel); self.assertIn('systemd.show_status=true', rel)     # clean panel; systemd lines still reach the log shown with SELECT
         self.assertNotIn('quiet', dev); self.assertIn('wisp.dev', dev); self.assertNotIn('wisp.dev', rel)
         self.assertNotIn('wisp.splash=off', rel + dev)                                  # the splash is ON in both; off is an edit of extlinux.conf on any PC
+
+
+class BootScreenWiringTests(unittest.TestCase):
+    """The Wayland phase of the boot screen in the image (os/splash/wisp-bootscreen.c, docs/WISPOS-SPLASH-DESIGN.md): built from the shared drawing code, staged, checked, started once the
+    compositor is up and before the first screens, and unable to hold the boot up or to stay when it should not."""
+    def unit(self):
+        unit = configparser.ConfigParser(strict=False, interpolation=None); unit.optionxform = str
+        unit.read(HERE / 'rootfs/usr/lib/systemd/system/wisp-bootscreen.service'); return unit
+
+    def test_the_unit_starts_after_the_compositor_and_before_the_first_screens_without_being_required_by_them(self):
+        u = self.unit()
+        self.assertEqual(u['Unit']['After'], 'sway.service'); self.assertEqual(u['Unit']['Before'], 'wisp-setup.service wisp-steam.service')
+        self.assertEqual(u['Install']['WantedBy'], 'wispos.target')
+        link = HERE / 'rootfs/usr/lib/systemd/system/wispos.target.wants/wisp-bootscreen.service'
+        self.assertTrue(link.is_symlink()); self.assertEqual(os.readlink(link), '../wisp-bootscreen.service')
+        for other in ('wisp-setup.service', 'wisp-steam.service'):                                 # ordered after it, never dependent on it: if it cannot run, the boot goes on
+            text = (HERE / 'rootfs/usr/lib/systemd/system' / other).read_text()
+            self.assertNotRegex(text, r'(?m)^(Requires|BindsTo|Requisite)=.*wisp-bootscreen')
+
+    def test_it_reports_ready_with_its_first_frame_and_cannot_hold_the_boot_up_for_long(self):
+        u = self.unit()
+        self.assertEqual(u['Service']['Type'], 'notify'); self.assertEqual(u['Service']['NotifyAccess'], 'main')
+        self.assertLessEqual(int(u['Service']['TimeoutStartSec']), 60); self.assertEqual(u['Service']['Restart'], 'no')       # it is a boot decoration: it is never restarted over the real UI
+        self.assertIn('/usr/bin/wisp-bootscreen', u['Service']['ExecStart'])
+
+    def test_the_session_units_feed_it_a_stage_line_and_the_old_ready_stays_as_a_fallback_for_the_splash(self):
+        steam = (HERE / 'rootfs/usr/lib/systemd/system/wisp-steam.service').read_text()
+        self.assertIn('ExecStartPre=-/usr/bin/wisp-splash-say "Starting Steam"', steam)                  # the leading -: never fails the session
+        self.assertIn('ExecStartPre=-/usr/bin/wisp-splash-say --ready', (HERE / 'rootfs/usr/lib/systemd/system/wisp-setup.service').read_text())
+
+    def test_the_build_compiles_it_with_the_shared_drawing_code_and_the_images_own_fonts_and_stages_and_checks_it(self):
+        build = (HERE / 'build-rootfs.sh').read_text()
+        line = [l for l in build.splitlines() if 'wisp-bootscreen.c' in l and 'aarch64-linux-gnu-gcc' in l][0]
+        self.assertIn('-Werror', line); self.assertIn('-I"$HERE/splash"', line); self.assertIn('wlr-layer-shell', build)
+        gen = [l for l in build.splitlines() if 'gen_assets.py' in l and 'bootscreen' in l][0]
+        self.assertIn('$T/tree/usr/share/fonts/liberation', gen)                                          # the typeface of the image, as the initramfs splash takes it
+        self.assertIn('WISP_BOOTSCREEN_BIN', build); self.assertIn('usr/bin/wisp-bootscreen', (HERE / 'stage_rootfs.py').read_text())
+        contract = (HERE / 'check_rootfs.py').read_text()
+        for needed in ('usr/bin/wisp-bootscreen', 'usr/lib/systemd/system/wisp-bootscreen.service'): self.assertIn(needed, contract)
+
+    def test_the_splash_and_the_boot_screen_share_one_drawing_header(self):
+        scene = (HERE / 'splash/scene.h').read_text()
+        for fn in ('draw_screen', 'spinner', 'hint', 'badge', 'draw_logview_lines'): self.assertIn(fn, scene)
+        for prog in ('splash/wisp-splash.c', 'splash/wisp-bootscreen.c'):
+            text = (HERE / prog).read_text(); self.assertIn('#include "scene.h"', text)
+            for gone in ('static void rrect(', 'static void spinner(', 'static void draw_screen('): self.assertNotIn(gone, text)       # no private copy of the drawing
 
 
 class SteamosManagerWiringTests(unittest.TestCase):
@@ -1251,14 +1359,17 @@ class SteamosManagerWiringTests(unittest.TestCase):
 
 class UiReclaimWiringTests(unittest.TestCase):
     """The UI memory ceiling daemon in the image: ordered before Steam (helpers must be moved young), started with the session target, built and installed with the rest."""
-    def test_it_is_ordered_before_steam_takes_its_numbers_from_the_program_and_is_not_enabled(self):
+    def test_it_is_ordered_before_steam_takes_its_numbers_from_the_program_freezes_and_is_enabled_with_an_off_switch(self):
         unit = configparser.ConfigParser(strict=False, interpolation=None); unit.optionxform = str
         unit.read(HERE / 'rootfs/usr/lib/systemd/system/wisp-ui-reclaim.service')
         self.assertEqual(unit['Unit']['Before'], 'wisp-steam.service')                  # pages are charged where they were allocated: the helpers must be moved while young
-        self.assertEqual(unit['Service']['ExecStart'], '/usr/bin/wisp-ui-reclaim')      # no numbers here: the C defaults are the one place (tested in test_ui_reclaim.py)
-        # NOT enabled until the UI is also frozen/visibility-aware: the 2026-10-11 A/B showed the ceiling alone makes the running UI thrash and costs the game CPU
-        self.assertNotIn('Install', unit.sections())
-        self.assertFalse((HERE / 'rootfs/usr/lib/systemd/system/wispos.target.wants/wisp-ui-reclaim.service').exists())
+        # no numbers here: the C defaults are the one place (tested in test_ui_reclaim.py). --freeze is the only combination that measured well: a ceiling alone makes the running UI thrash.
+        self.assertEqual(unit['Service']['ExecStart'], '/usr/bin/wisp-ui-reclaim --freeze')
+        self.assertEqual(unit['Install']['WantedBy'], 'wispos.target')
+        link = HERE / 'rootfs/usr/lib/systemd/system/wispos.target.wants/wisp-ui-reclaim.service'
+        self.assertTrue(link.is_symlink()); self.assertEqual(os.readlink(link), '../wisp-ui-reclaim.service')
+        self.assertEqual(unit['Unit']['ConditionPathExists'], '!/storage/.config/wispos/ui-reclaim-off')       # the operator's way out without touching the read-only system
+        self.assertEqual(unit['Service']['Restart'], 'on-failure')                                              # a crash must not leave the UI throttled for good
 
     def test_the_build_compiles_installs_and_checks_it(self):
         build = (HERE / 'build-rootfs.sh').read_text()
@@ -1266,6 +1377,55 @@ class UiReclaimWiringTests(unittest.TestCase):
         self.assertIn('-Werror', line); self.assertNotIn(' -l', line); self.assertNotIn('.so', line)                       # plain libc: no other library
         self.assertIn('WISP_UI_RECLAIM_BIN', build); self.assertIn("usr/bin/wisp-ui-reclaim", (HERE / 'stage_rootfs.py').read_text())
         self.assertIn('usr/bin/wisp-ui-reclaim', (HERE / 'check_rootfs.py').read_text())
+
+
+class PadWiringTests(unittest.TestCase):
+    """The gamepad daemon in the image: built and installed with the rest, tied to the desktop session's lifetime, and started by nothing else (Game mode keeps Steam Input as the only mapping)."""
+    def test_the_unit_is_part_of_the_desktop_session_and_is_not_enabled_anywhere(self):
+        unit = configparser.ConfigParser(strict=False, interpolation=None); unit.optionxform = str
+        unit.read(HERE / 'rootfs/usr/lib/systemd/system/wisp-pad.service')
+        self.assertEqual(unit['Unit']['PartOf'], 'wisp-desktop.service')                   # stops when the desktop session stops: the pad is released for Steam
+        self.assertEqual(unit['Service']['ExecStart'], '/usr/bin/wisp-pad')
+        self.assertNotIn('Install', unit.sections())
+        wants = HERE / 'rootfs/usr/lib/systemd/system'
+        for d in wants.glob('*.wants'):
+            self.assertFalse((d / 'wisp-pad.service').exists(), 'wisp-pad must not be enabled in %s' % d.name)
+        for f in wants.glob('wisp-steam*.service'):                                         # and nothing that runs in Game mode pulls it in
+            self.assertNotIn('wisp-pad', f.read_text())
+
+    def test_the_build_compiles_installs_and_checks_it(self):
+        build = (HERE / 'build-rootfs.sh').read_text()
+        line = [l for l in build.splitlines() if 'wisp-pad.c' in l and 'aarch64-linux-gnu-gcc' in l][0]
+        self.assertIn('-Werror', line)
+        for src in ('pad-io.c', 'pad-logic.c'): self.assertIn(src, line)
+        self.assertNotIn('.so', line)                                                       # libc and libm only
+        self.assertIn('WISP_PAD_BIN', build); self.assertIn('usr/bin/wisp-pad', (HERE / 'stage_rootfs.py').read_text())
+        check = (HERE / 'check_rootfs.py').read_text()
+        self.assertIn('usr/bin/wisp-pad', check); self.assertIn('usr/lib/systemd/system/wisp-pad.service', check)
+
+
+class UsbPortWiringTests(unittest.TestCase):
+    """The USB-C port tool in the image (wisp-usb): installed, its watcher not started by anything but host mode, ROCKNIX's own gadget gone, the kernel gate in the build."""
+    def test_the_watcher_unit_runs_the_tool_and_is_not_enabled_anywhere(self):
+        unit = configparser.ConfigParser(strict=False, interpolation=None); unit.optionxform = str
+        unit.read(HERE / 'rootfs/usr/lib/systemd/system/wisp-usb-watch.service')
+        self.assertEqual(unit['Service']['ExecStart'], '/usr/bin/wisp-usb watch')
+        self.assertNotIn('Install', unit.sections())                                      # host mode is off at every boot: nothing starts the watcher but `wisp-usb host`
+        for wants in (HERE / 'rootfs/usr/lib/systemd/system').glob('*.wants'): self.assertFalse((wants / 'wisp-usb-watch.service').exists(), wants)
+
+    def test_the_tool_is_executable_and_part_of_the_boot_contract(self):
+        self.assertTrue(os.access(HERE / 'rootfs/usr/bin/wisp-usb', os.X_OK))
+        self.assertTrue((HERE / 'rootfs/usr/bin/wisp-usb').read_text().startswith('#!/usr/bin/python3'))
+        for path in ('usr/bin/wisp-usb', 'usr/lib/systemd/system/wisp-usb-watch.service'): self.assertIn(path, check_rootfs.BOOT_CONTRACT)
+
+    def test_rocknixs_gadget_is_pruned_so_that_nothing_else_can_switch_the_port_role(self):
+        prune = [l.strip() for l in (HERE / 'rootfs-prune.txt').read_text().splitlines() if l.strip() and not l.startswith('#')]
+        for path in ('usr/bin/usbgadget', 'usr/lib/udev/rules.d/80-usbgadget.rules', 'usr/lib/autostart/common/081-usbgadget', 'usr/sbin/umtprd', 'etc/umtprd'): self.assertIn(path, prune)
+
+    def test_the_kernel_gate_is_what_the_tool_writes(self):
+        patch = (HERE / 'boot/patches/0001-phy-sun4i-usb-host-gate.patch').read_text(); tool = (HERE / 'rootfs/usr/bin/wisp-usb').read_text()
+        self.assertIn('host_enable', patch); self.assertIn("sun4i-usb-phy/*/host_enable", tool)          # the attribute's name and the driver directory it appears under
+        self.assertIn('.name = "sun4i-usb-phy"', patch)                                                      # the driver whose directory holds it (a context line of the hunk)
 
 
 class CheckReleaseTests(unittest.TestCase):
@@ -1304,9 +1464,40 @@ class CheckReleaseTests(unittest.TestCase):
         root = self.tree(wispos=False); (root / 'usr/lib/systemd/system/sysinit.target.wants').mkdir(); (root / 'usr/lib/systemd/system/sysinit.target.wants/debug-shell.service').symlink_to('../x')
         r = self.rows(root); self.assertEqual((r['tty9_shell']['status'], r['os_release_identity']['status']), ('DIFFERS', 'DIFFERS'))
 
+    def test_usb_host_mode_without_a_recorded_bench_result_is_a_gap_in_a_release(self):
+        root = self.tree(); (root / 'usr/bin').mkdir(parents=True, exist_ok=True)
+        self.assertEqual(self.rows(root)['usb_host_bench']['status'], 'OK')                                 # no host-mode tool in the image: nothing to prove
+        (root / 'usr/bin/wisp-usb').write_text('#!/bin/sh\n')
+        self.assertEqual(self.rows(root)['usb_host_bench']['status'], 'DIFFERS')
+        (root / 'usr/share/wispos/usb-host-bench').write_text('T1-T4 passed\n')
+        r = self.rows(root)['usb_host_bench']; self.assertEqual(r['status'], 'OK'); self.assertIn('T1-T4 passed', r['current'])
+
     def test_a_unit_that_an_autostart_step_starts_counts_as_running_even_without_an_enablement_link(self):
         r = self.rows(self.tree(autostart_input=True))
-        self.assertEqual(r['rocknix_units']['status'], 'DIFFERS'); self.assertIn('input.service (started by autostart step 098-deviceutils)', r['rocknix_units']['current'])
+        self.assertEqual(r['rocknix_units']['status'], 'ACCEPTED'); self.assertIn('input.service (started by autostart step 098-deviceutils)', r['rocknix_units']['current'])      # kept on purpose
+        self.assertIn('accepted for this release: the volume and brightness buttons', r['rocknix_units']['current'])
+
+    def test_leftovers_kept_on_purpose_are_accepted_with_their_reasons_and_any_other_is_a_gap(self):
+        import check_release
+        root = self.tree(); wants = root / 'usr/lib/systemd/system/multi-user.target.wants'
+        for u in ('rocknix-autostart.service', 'powerstate.service'): (root / 'usr/lib/systemd/system' / u).write_text('[Service]\n'); (wants / u).symlink_to('../' + u)
+        r = self.rows(root)['rocknix_units']; self.assertEqual(r['status'], 'ACCEPTED'); self.assertIn('hardware bring-up', r['current']); self.assertIn('CPU performance policy', r['current'])
+        (root / 'usr/lib/systemd/system/shell.service').write_text('[Service]\n'); (wants / 'shell.service').symlink_to('../shell.service')                    # a leftover nobody explained
+        r = self.rows(root)['rocknix_units']; self.assertEqual(r['status'], 'DIFFERS'); self.assertTrue(r['current'].startswith('shell.service;')); self.assertIn('hardware bring-up', r['current'])
+        self.assertEqual(set(check_release.EXPLAINED_LEFTOVERS) & {'shell.service', 'debug-shell.service'}, set())                                                  # the shells are never excused
+
+    def test_a_unit_enabled_only_in_a_target_the_boot_graph_never_reaches_is_not_running(self):
+        root = self.tree(); d = root / 'usr/lib/systemd/system/textmode.target.wants'; d.mkdir()
+        (root / 'usr/lib/systemd/system/shell.service').write_text('[Service]\n'); (d / 'shell.service').symlink_to('../shell.service')
+        self.assertEqual(self.rows(root)['rocknix_units']['status'], 'OK')                                       # textmode.target is only started by a kernel argument
+
+    def test_strict_passes_with_only_accepted_leftovers_and_the_release_text_names_them(self):
+        import check_release, contextlib, io
+        root = self.tree(sshd_conditional=True, default_pw=False, pa='no'); (root / 'usr/share/wispos/update.conf').write_text('{}'); (root / 'usr/share/wispos/update-key.pub').write_text('k')
+        (root / 'usr/lib/systemd/system/input.service').write_text('[Service]\n'); (root / 'usr/lib/systemd/system/multi-user.target.wants/input.service').symlink_to('../input.service')
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(check_release.main(['--tree', str(root), '--extlinux', '/nonexistent', '--strict']), 0)
+        self.assertIn('1 are gaps accepted for this release', out.getvalue())
 
     def test_strict_fails_only_on_differences_and_a_missing_extlinux_is_unknown_not_ok(self):
         import check_release, contextlib, io

@@ -3,6 +3,8 @@
 [Unit]
 Description=WispOS Steam Big Picture session
 Requires=sway.service
+# One mode at a time: starting desktop mode (wisp-session-select desktop) stops this session, and starting this one stops desktop mode.
+Conflicts=wisp-desktop.service
 After=sway.service seatd.service NetworkManager.service iwd.service rocknix-autostart.service wisp-setup.service
 # Wants, not Requires: if the screen cannot run at all (no display) the session still gets its own chance and its own skip rules.
 Wants=wisp-setup.service
@@ -13,6 +15,7 @@ ConditionPathExists=/storage/wispos/runtime/READY
 [Service]
 Type=simple
 Environment=HOME=/storage/wispos/home
+ExecStartPre=-/usr/bin/wisp-splash-say "Starting Steam"
 ExecStartPre=-/usr/bin/wisp-shm-clean
 ExecStart=/usr/bin/wisp-steam-session
 Restart=always

@@ -1,0 +1,78 @@
+#!/bin/sh
+# wisp-download-action install|extract|open FILE: what the desktop shell's download toast offers when you accept it (os/dock/downloads.c decides which action fits the file). Started by the
+# shell, detached, with no terminal: progress and results are shown as toasts (wisp-dock --ctl toast).
+#   install  an AppImage built for this CPU: moved to /storage/apps, made executable, and given an entry in /storage/.local/share/applications (which the application menu reads, so it can
+#            be pinned to the dock). Without FUSE it is started with APPIMAGE_EXTRACT_AND_RUN=1.
+#   extract  a zip, 7z, rar or tar archive: unpacked to /storage/games/<name> (a number is added when that exists); a lone top-level folder is unwrapped; links that point outside are removed.
+#   open     a picture: shown in the image viewer.
+# The file's name comes from the web and is never used as a path or in a command line as it is: names are reduced to [A-Za-z0-9._-] first.
+# Environment (test seams; each has the production default): WISP_DOCK, WISP_APPS_DIR (/storage/apps), WISP_ENTRIES_DIR (/storage/.local/share/applications), WISP_GAMES_DIR (/storage/games),
+# WISP_FUSE_DEV (/dev/fuse), WISP_VIEWER (swayimg).
+DOCK=${WISP_DOCK:-wisp-dock}
+APPS=${WISP_APPS_DIR:-/storage/apps}
+ENTRIES=${WISP_ENTRIES_DIR:-/storage/.local/share/applications}
+GAMES=${WISP_GAMES_DIR:-/storage/games}
+FUSE=${WISP_FUSE_DEV:-/dev/fuse}
+VIEWER=${WISP_VIEWER:-swayimg}
+
+say() { "$DOCK" --ctl toast "$1|$2|${3:-6}" >/dev/null 2>&1 || echo "wisp-download-action: $1: $2" >&2; }
+die() { say "$1" "$2" 8; echo "wisp-download-action: $2" >&2; exit 1; }
+safe() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-60; }
+
+action=${1:-}; file=${2:-}
+[ -n "$action" ] && [ -n "$file" ] || { echo "usage: wisp-download-action install|extract|open FILE" >&2; exit 2; }
+[ -f "$file" ] && [ ! -L "$file" ] || die "Download" "The file is not there any more."
+name=$(basename -- "$file")
+
+case "$action" in
+install)
+    stem=${name%.[Aa]pp[Ii]mage}
+    s=$(safe "$stem"); [ -n "$s" ] || s=app
+    mkdir -p "$APPS" "$ENTRIES" || die "Install" "Cannot write to the card."
+    dest=$APPS/$s.AppImage
+    mv -f -- "$file" "$dest" || die "Install" "Cannot move the program into place."
+    chmod 755 "$dest" || die "Install" "Cannot make the program executable."
+    # the name shown: the file's name without a version, an architecture or separators ("Foo-1.2.3-aarch64" is "Foo")
+    label=$(printf '%s' "$stem" | sed -e 's/[-_.][vV]\{0,1\}[0-9][0-9.]*.*$//' -e 's/[-_.]\(aarch64\|arm64\|armhf\|x86_64\).*$//' | tr -c 'A-Za-z0-9 +' ' ' | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
+    [ -n "$label" ] || label=$s
+    if [ -e "$FUSE" ]; then run=$dest; else run="env APPIMAGE_EXTRACT_AND_RUN=1 $dest"; fi
+    entry=$ENTRIES/appimage-$s.desktop
+    printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nTerminal=false\nCategories=Utility;\n' "$label" "$run" > "$entry.new" && mv -f "$entry.new" "$entry" || die "Install" "Cannot write the menu entry."
+    say "Installed" "$label is in the application menu." 6 ;;
+extract)
+    case "$name" in
+        *.[Zz][Ii][Pp]|*.7z|*.7Z|*.[Rr][Aa][Rr]) kind=7z ;;
+        *.tar.gz|*.tgz|*.TAR.GZ|*.TGZ) kind=gz ;;
+        *.tar.xz|*.txz|*.TAR.XZ|*.TXZ) kind=xz ;;
+        *.tar.bz2|*.tbz2|*.TAR.BZ2|*.TBZ2) kind=bz2 ;;
+        *.tar|*.TAR) kind=tar ;;
+        *) die "Extract" "I do not know how to unpack that kind of archive." ;;
+    esac
+    stem=$name
+    for ext in .tar.gz .tar.xz .tar.bz2 .tgz .txz .tbz2 .tar .zip .7z .rar .TAR.GZ .TAR.XZ .TAR.BZ2 .TGZ .TXZ .TBZ2 .TAR .ZIP .7Z .RAR; do stem=${stem%"$ext"}; done
+    s=$(safe "$stem"); [ -n "$s" ] || s=archive
+    mkdir -p "$GAMES" || die "Extract" "Cannot write to the card."
+    dest=$GAMES/$s; n=2; while [ -e "$dest" ]; do dest=$GAMES/$s-$n; n=$((n + 1)); done
+    tmp=$GAMES/.extract-$$; rm -rf "$tmp"; mkdir "$tmp" || die "Extract" "Cannot write to the card."
+    say "Extracting" "$s..." 60
+    case "$kind" in
+        7z) 7z x -y -bd -o"$tmp" -- "$file" >/dev/null 2>&1 ;;
+        gz) tar -xzf "$file" -C "$tmp" 2>/dev/null ;;
+        xz) xz -dc -- "$file" 2>/dev/null | tar -xf - -C "$tmp" 2>/dev/null ;;
+        bz2) bzip2 -dc -- "$file" 2>/dev/null | tar -xf - -C "$tmp" 2>/dev/null ;;
+        tar) tar -xf "$file" -C "$tmp" 2>/dev/null ;;
+    esac || { rm -rf "$tmp"; die "Extract" "Could not unpack $s. The archive may be damaged."; }
+    # nothing in it may point out of the folder: a link whose target is absolute or climbs out is removed, a path that climbed out was refused by the tools above
+    find "$tmp" -type l 2>/dev/null | while read -r l; do
+        t=$(readlink "$l"); case "$t" in /*|*..*) rm -f "$l" ;; esac
+    done
+    [ -n "$(ls -A "$tmp" 2>/dev/null)" ] || { rm -rf "$tmp"; die "Extract" "The archive was empty."; }
+    top=$(ls -A "$tmp"); count=$(ls -A "$tmp" | wc -l)
+    if [ "$count" -eq 1 ] && [ -d "$tmp/$top" ] && [ ! -L "$tmp/$top" ]; then mv "$tmp/$top" "$dest"; rm -rf "$tmp"; else mv "$tmp" "$dest"; fi
+    [ -d "$dest" ] || die "Extract" "Cannot put the files in place."
+    say "Extracted" "$s is in $GAMES." 8 ;;
+open)
+    exec "$VIEWER" "$file" ;;
+*)
+    echo "usage: wisp-download-action install|extract|open FILE" >&2; exit 2 ;;
+esac

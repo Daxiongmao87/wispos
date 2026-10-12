@@ -189,3 +189,20 @@ usr/lib/systemd/system/timers.target.wants/rocknix-report-stats.timer
 
 # --- ROCKNIX's games-card automount: it mounts any external card of 8 GB or more at /storage/games-external and binds it over /storage/roms; the TF2 card is mounted by 98-wisp-tf2.rules instead ---
 usr/lib/udev/rules.d/99-automount.rules
+
+# --- ROCKNIX's USB gadget: its usbgadget script reads the cable through a Rockchip-named PHY, switches the port role through paths that go round the kernel's host gate, and needs an MTP daemon;
+#     wisp-usb replaces all of it (docs/WISPOS-OS-DESIGN.md, "USB-C: power and data together") ---
+usr/bin/usbgadget
+usr/lib/udev/rules.d/80-usbgadget.rules
+usr/lib/autostart/common/081-usbgadget
+usr/sbin/umtprd
+etc/umtprd
+
+# --- ROCKNIX's application entries: WispOS's own set (usr/share/applications/wisp-*.desktop) is the whole of the desktop's application menu; these were for ROCKNIX's emulation frontend ---
+usr/share/applications/cups.desktop
+usr/share/applications/htop.desktop
+usr/share/applications/mpv.desktop
+usr/share/applications/nvtop.desktop
+usr/share/applications/org.freedesktop.Xwayland.desktop
+usr/share/applications/swayimg.desktop
+usr/share/applications/wine.desktop

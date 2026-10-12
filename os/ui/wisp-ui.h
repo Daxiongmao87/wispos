@@ -77,4 +77,50 @@
 #define WISP_UI_SPIN_SPEED    12
 #define WISP_UI_SPIN_FADE     215    /* alpha = 255 - WISP_UI_SPIN_FADE x age, age 0 (head) .. 1 (tail) */
 
+
+/* desktop-mode wallpaper (docs/WISPOS-UI-LANGUAGE.md "Desktop mode"; LOCKED 2026-10-12, operator 2026-10-12: "something subtle with gradients, perhaps with a very subtle negative space of our badge").
+ * os/ui/wallpaper.py draws it from these; the blues are the ground and the accent, only darker and lifted a little. */
+#define WISP_UI_WALL_TOP      0x142132   /* top-left of the vertical gradient */
+#define WISP_UI_WALL_BOTTOM   0x0a1017   /* bottom edge */
+#define WISP_UI_WALL_GLOW_X   28         /* centre of the accent glow, percent of the width ... */
+#define WISP_UI_WALL_GLOW_Y   16         /* ... and of the height */
+#define WISP_UI_WALL_GLOW     6          /* glow strength, percent of the accent colour added at its centre */
+
+
+/* desktop-mode shell (docs/WISPOS-UI-LANGUAGE.md "Desktop mode"; LOCKED 2026-10-12, operator requirements 2026-10-12): a strip along the bottom edge and overlays on top of ordinary
+ * windows, in the palette and type above. Corner radius is WISP_UI_RADIUS; pills, dots and switches are fully round. */
+#define WISP_UI_DOCK_H         44        /* the strip; it reserves its space, so maximised windows are not covered */
+#define WISP_UI_DOCK_ALPHA     236       /* strip opacity 0..255 over the wallpaper */
+#define WISP_UI_DOCK_TILE      36        /* an item's tile (a well in the ground colour; white when focused) */
+#define WISP_UI_DOCK_ICON      22        /* the glyph inside it */
+#define WISP_UI_DOCK_PITCH     44        /* from one tile to the next */
+#define WISP_UI_DOCK_INSET     8         /* first tile from the left edge, last status item from the right */
+#define WISP_UI_DOCK_RUN_DOT   4         /* a running application: a dot ... */
+#define WISP_UI_DOCK_RUN_BAR   14        /* ... a bar for the window in front */
+#define WISP_UI_DOCK_RUN_H     3
+#define WISP_UI_DOCK_STATUS    20        /* status glyphs at the right */
+#define WISP_UI_DOCK_BAR       28        /* the bar above the strip while it is summoned: the item's name and the buttons */
+#define WISP_UI_POPUP_ROW      36        /* rows of a popup list above an item, and of the quick-settings list */
+#define WISP_UI_MENU_COLS      4         /* application menu: the grid */
+#define WISP_UI_MENU_X         60
+#define WISP_UI_MENU_Y         112
+#define WISP_UI_MENU_CELL_W    150
+#define WISP_UI_MENU_CELL_H    128
+#define WISP_UI_MENU_TILE      72
+#define WISP_UI_MENU_ICON      44
+#define WISP_UI_MENU_SCRIM     248       /* the ground colour over what is behind the menu, opacity 0..255 */
+
+/* components shared by the keyboard, the quick settings and the lists (LOCKED 2026-10-12 with the desktop-mode shell; the first-time setup keyboard is the reference for the keys) */
+#define WISP_UI_FIELD          0x000000  /* text fields and the special keys of the keyboard (the setup screen's black) */
+#define WISP_UI_KEY_H          40
+#define WISP_UI_KEY_GAP        4
+#define WISP_UI_KEY_W          60        /* a letter key of the full-width desktop keyboard (the setup's narrower panel uses 40) */
+#define WISP_UI_OSK_Y          204       /* top of the desktop keyboard's panel; the hints stay at WISP_UI_HINT_Y; the dock is hidden while it is open */
+#define WISP_UI_SWITCH_W       40
+#define WISP_UI_SWITCH_H       22
+#define WISP_UI_SLIDER_H       4
+#define WISP_UI_SLIDER_KNOB    6
+#define WISP_UI_SEGMENT_H      26
+#define WISP_UI_QS_W           316       /* the quick-settings panel above the strip */
+
 #endif

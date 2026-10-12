@@ -4,8 +4,9 @@
   os/check_release.py [--tree DIR] [--extlinux FILE] [--strict] [--json]
     --tree      the unpacked SYSTEM (default: the work tree's rootfs/tree)
     --extlinux  the extlinux.conf of the card image (default: the work tree's image/boot/extlinux/extlinux.conf; the kernel arguments are not in SYSTEM)
-Each row says OK (matches the proposal), DIFFERS (a known gap to close before a release) or DECISION (the proposal itself is the operator's call; the current value is shown so he can
-decide). This is decision support, not a gate: the exit status is 0 unless --strict is given, and then only DIFFERS rows fail it. check_rootfs.py is the gate for what is already decided
+Each row says OK (matches the proposal), DIFFERS (a known gap to close before a release), ACCEPTED (a gap that is deliberately kept for this release, with the reason and what would
+close it) or DECISION (the proposal itself is the operator's call; the current value is shown so he can decide). This is decision support, not a gate: the exit status is 0 unless
+--strict is given, and then only DIFFERS rows fail it. check_rootfs.py is the gate for what is already decided
 (dev files, forbidden files)."""
 import argparse, json, re, sys
 from pathlib import Path
@@ -21,9 +22,24 @@ ROCKNIX_UNITS = ('rocknix-autostart.service', 'input.service', 'powerstate.servi
                  'rocknix-automount.service', 'shell.service', 'debug-shell.service')
 
 
-def enabled(tree, unit):
-    """Directories (relative) whose *.wants hold a link to UNIT."""
-    return sorted(str(p.parent.relative_to(tree)) for d in UNIT_DIRS if (tree / d).is_dir() for p in (tree / d).glob(f'*.wants/{unit}') if p.is_symlink() or p.exists())
+# Targets the WispOS boot graph never reaches (wispos.target needs multi-user and graphical only; these are started by a kernel argument or by hand): a unit enabled only there is not running.
+UNREACHABLE_WANTS = ('textmode.target.wants', 'installer.target.wants', 'rescue.target.wants', 'emergency.target.wants')
+
+# ROCKNIX leftovers that 0.1.0 keeps ON PURPOSE (0.1.0 plan, "Decisions I am taking": removing them cannot be verified without the handheld), each with why. The gate reports them as
+# ACCEPTED rather than as gaps; every one is on the list to close once a device session can show what it does on this board. A leftover NOT named here is a gap.
+EXPLAINED_LEFTOVERS = {
+    'rocknix-autostart.service': 'runs the hardware bring-up steps (audio routing, display, the H700 quirks, the sway config) that the session depends on; what each step does on this board is only visible on the device',
+    'input.service': 'the volume and brightness buttons (input_sense); Steam Input does not cover the hardware keys',
+    'powerstate.service': 'the AC/battery CPU performance policy; its effect on thermals and runtime needs the device',
+    'batteryplus.service': 'a battery fuel-gauge helper for some H700 boards; inert where that hardware is absent, and the board here cannot be checked from the host',
+    'hdmi-hotplug.path': 'inert on this board (no HDMI connector); harmless',
+    'rocknix-memory-manager.service': 'memory and zram policy set at boot; the session also sets its own zram, and their interplay needs the device',
+}
+
+
+def enabled(tree, unit, skip=()):
+    """Directories (relative) whose *.wants hold a link to UNIT (skip: *.wants directory names that do not count)."""
+    return sorted(str(p.parent.relative_to(tree)) for d in UNIT_DIRS if (tree / d).is_dir() for p in (tree / d).glob(f'*.wants/{unit}') if (p.is_symlink() or p.exists()) and p.parent.name not in skip)
 
 
 def started_by_autostart(tree, unit):
@@ -75,17 +91,25 @@ def rows(tree, extlinux_text):
     add('serial_console_arg', 'a serial console on the kernel command line', 'unknown (no extlinux.conf given)' if args is None else ('present' if any(a.startswith('console=ttyS') for a in args) else 'absent'),
         "ROCKNIX's convention: kept", 'OK')
     add('tty9_shell', 'an always-on root shell on tty9', 'enabled' if enabled(tree, 'debug-shell.service') else 'not enabled', 'not enabled', 'DIFFERS' if enabled(tree, 'debug-shell.service') else 'OK')
-    left = []
+    left, accepted = [], []
     for u in ROCKNIX_UNITS:
         if u == 'debug-shell.service': continue
-        if enabled(tree, u): left.append(u)
-        elif started_by_autostart(tree, u): left.append(f"{u} (started by autostart step {', '.join(started_by_autostart(tree, u))})")
-    add('rocknix_units', 'ROCKNIX leftovers enabled in the boot graph', ', '.join(left) if left else 'none', 'removed or replaced (effort 1)', 'DIFFERS' if left else 'OK')
+        note = None
+        if enabled(tree, u, UNREACHABLE_WANTS): note = u
+        elif started_by_autostart(tree, u): note = f"{u} (started by autostart step {', '.join(started_by_autostart(tree, u))})"
+        if note is None: continue
+        if u in EXPLAINED_LEFTOVERS: accepted.append(f'{note} [accepted for this release: {EXPLAINED_LEFTOVERS[u]}]')
+        else: left.append(note)
+    add('rocknix_units', 'ROCKNIX leftovers enabled in the boot graph', '; '.join(left + accepted) if left or accepted else 'none', 'removed or replaced (effort 1); the ones kept on purpose are named and explained',
+        'DIFFERS' if left else ('ACCEPTED' if accepted else 'OK'))
     osr = (tree / 'etc/os-release').read_text() if (tree / 'etc/os-release').exists() else ''
     add('os_release_identity', 'os-release carries WispOS identity and no ROCKNIX upstream', 'ROCKNIX named' if re.search('ROCKNIX', osr) else ('WispOS' if 'ID="wispos"' in osr else 'no WispOS id'),
         'WispOS, our version and build id', 'OK' if 'ID="wispos"' in osr and 'ROCKNIX' not in osr else 'DIFFERS')
     src = (tree / 'usr/share/wispos/update.conf').exists() and (tree / 'usr/share/wispos/update-key.pub').exists()
     add('update_source', 'an update source and signing key are baked in', 'yes' if src else 'no (the helper says "no update source is configured")', 'yes, from the release process', 'OK' if src else 'DIFFERS')
+    bench, has_tool = tree / 'usr/share/wispos/usb-host-bench', (tree / 'usr/bin/wisp-usb').exists()
+    add('usb_host_bench', 'USB host mode has its bench-test result recorded (spike S-USB)', ('recorded: ' + bench.read_text().strip()) if bench.exists() else ('not recorded' if has_tool else 'no host-mode tool in this image'),
+        'the bench result written in docs/WISPOS-OS-DESIGN.md and named at build time (WISP_USB_HOST_BENCH)', 'OK' if bench.exists() or not has_tool else 'DIFFERS')
     return r
 
 
@@ -100,8 +124,8 @@ def main(argv):
     if a.json: print(json.dumps(out, indent=1))
     else:
         for x in out: print(f"{x['status']:8} {x['what']}\n         now: {x['current']}\n         proposed: {x['proposed']}")
-        n = {s: sum(1 for x in out if x['status'] == s) for s in ('OK', 'DIFFERS', 'DECISION')}
-        print(f"\n{n['OK']} match the proposed release profile, {n['DIFFERS']} differ (gaps to close), {n['DECISION']} are the operator's decision.")
+        n = {s: sum(1 for x in out if x['status'] == s) for s in ('OK', 'ACCEPTED', 'DIFFERS', 'DECISION')}
+        print(f"\n{n['OK']} match the proposed release profile, {n['ACCEPTED']} are gaps accepted for this release (explained), {n['DIFFERS']} differ (gaps to close), {n['DECISION']} are the operator's decision.")
     return 1 if a.strict and any(x['status'] == 'DIFFERS' for x in out) else 0
 
 

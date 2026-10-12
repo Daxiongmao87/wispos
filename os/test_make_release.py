@@ -18,7 +18,15 @@ class Base(unittest.TestCase):
         self.priv, self.pub = self.d / 'keys/update-signing.pem', self.d / 'update-key.pub'
         self.env = {**os.environ, 'WISP_BAKED_PUBLIC': str(self.pub), 'TMPDIR': str(WORK / 'tmp')}
         self.kernel, self.system = self.d / 'Image', self.d / 'SYSTEM'
-        self.kernel.write_bytes(os.urandom(200_000)); self.system.write_bytes(os.urandom(500_000))
+        self.kernel.write_bytes(os.urandom(200_000))
+        self.make_system()
+
+    def make_system(self, build_id='20261012.1', version='0.1.1', device='H700', path=None):
+        """A real (small) squashfs whose /etc/os-release names the release: the tool reads the identity out of the image it signs."""
+        src = self.d / 'sysroot'; shutil.rmtree(src, True); (src / 'etc').mkdir(parents=True); (src / 'blob').write_bytes(os.urandom(300_000))
+        (src / 'etc/os-release').write_text('ID="wispos"\nBUILD_ID="%s"\nWISPOS_VERSION="%s"\nHW_DEVICE="%s"\n' % (build_id, version, device))
+        out = Path(path or self.system); out.unlink(missing_ok=True)
+        subprocess.run(['mksquashfs', str(src), str(out), '-quiet', '-no-progress', '-noappend', '-comp', 'gzip'], check=True, capture_output=True)
 
     def tree(self, conditional_ssh):
         import accounts
@@ -96,6 +104,29 @@ class BuildTests(Base):
         self.build(self.d / 'rel'); self.assertIn('WARNING: this key is NOT the public key baked into the images', (self.d / 'rel/RELEASE.txt').read_text())
 
 
+class IdentityTests(Base):
+    """The SYSTEM that is signed must say what the manifest says (the release would otherwise be offered again and again)."""
+    def test_a_system_that_names_another_build_version_or_device_is_refused_and_nothing_is_written(self):
+        self.keygen()
+        for kw, what in (({'build_id': '20261011.9'}, 'BUILD_ID'), ({'version': '0.1.0'}, 'WISPOS_VERSION'), ({'device': 'RPi5'}, 'HW_DEVICE')):
+            self.make_system(**kw); out = self.d / ('rel-' + what)
+            r = self.build(out, check=False); self.assertEqual(r.returncode, 2, what); self.assertIn(what, r.stderr); self.assertIn('offer the same update again', r.stderr); self.assertFalse(out.exists(), what)
+
+    def test_a_file_that_is_not_a_system_image_is_refused(self):
+        self.keygen(); self.system.write_bytes(os.urandom(500_000))
+        r = self.build(self.d / 'rel', check=False); self.assertEqual(r.returncode, 2); self.assertIn('cannot read etc/os-release', r.stderr); self.assertFalse((self.d / 'rel').exists())
+
+    def test_version_and_build_id_default_to_the_lockfile(self):
+        self.keygen(); lock = self.d / 'lockfile.json'; lock.write_text(json.dumps({'version': '0.1.1', 'build_id': '20261012.1'})); self.env['WISP_LOCKFILE'] = str(lock)
+        r = self.tool('build', '--kernel', str(self.kernel), '--system', str(self.system), '--base-url', 'https://example.invalid/r', '--out', str(self.d / 'rel'), '--key', str(self.priv),
+                      '--tree', str(self.tree(True)), '--extlinux', '/nonexistent')
+        m = json.loads((self.d / 'rel/manifest.json').read_text()); self.assertEqual((m['version'], m['build_id']), ('0.1.1', '20261012.1'))
+        lock.write_text(json.dumps({'version': '0.1.1'}))                                       # a lockfile without a build id, and none given
+        r = self.tool('build', '--kernel', str(self.kernel), '--system', str(self.system), '--base-url', 'https://example.invalid/r', '--out', str(self.d / 'rel2'), '--key', str(self.priv),
+                      '--tree', str(self.tree(True)), '--extlinux', '/nonexistent', check=False)
+        self.assertEqual(r.returncode, 2); self.assertIn('no --build-id', r.stderr)
+
+
 class GateTests(Base):
     """The release gate: check_release.py --strict decides before anything is written."""
     def args(self, out, *extra):
@@ -124,9 +155,12 @@ class GateTests(Base):
 class RoundTripTests(Base):
     """The release this tool makes, served locally, through the device's own helper."""
     def helper(self, base, *args, pub=None):
-        flash = self.d / 'flash'; flash.mkdir(exist_ok=True)
+        flash = self.d / 'flash'
+        if not flash.exists():                                          # a card as flashed: slot a running (docs/WISPOS-UPDATE-DESIGN.md "Boot slots")
+            (flash / 'extlinux').mkdir(parents=True); (flash / 'extlinux/extlinux.conf').write_text('DEFAULT a\nLABEL a\n  LINUX /KERNEL\nLABEL b\n  LINUX /wispos/b/KERNEL\n')
+            (flash / 'KERNEL').write_bytes(b'old kernel'); (flash / 'SYSTEM').write_bytes(b'old system'); (self.d / 'cmdline').write_text('boot=LABEL=ROCKNIX wisp.slot=a\n')
         (self.d / 'update.conf').write_text(json.dumps({'manifest_url': base + '/manifest.json'})); (self.d / 'os-release').write_text('BUILD_ID="20261011.1"\nWISPOS_VERSION="0.1.0"\nHW_DEVICE="H700"\n')
-        env = {**os.environ, 'WISP_UPDATE_CONF': str(self.d / 'update.conf'), 'WISP_UPDATE_PUBKEY': str(pub or self.pub), 'WISP_OS_RELEASE': str(self.d / 'os-release'), 'WISP_FLASH_DIR': str(flash),
+        env = {**os.environ, 'WISP_UPDATE_CONF': str(self.d / 'update.conf'), 'WISP_UPDATE_PUBKEY': str(pub or self.pub), 'WISP_OS_RELEASE': str(self.d / 'os-release'), 'WISP_FLASH_DIR': str(flash), 'WISP_CMDLINE': str(self.d / 'cmdline'),
                'WISP_UPDATE_NO_REMOUNT': '1', 'WISP_UPDATE_ALLOW_HTTP': '1', 'WISP_UPDATE_FREE_MARGIN': '0', 'TMPDIR': str(WORK / 'tmp')}
         r = subprocess.run(['python3', str(HELPER), *args], capture_output=True, text=True, env=env, timeout=60); return r.returncode, r.stdout
 
@@ -139,13 +173,15 @@ class RoundTripTests(Base):
         for p in out.iterdir(): srv.files['/' + p.name] = p.read_bytes()
         return srv, base, out
 
-    def test_the_device_helper_accepts_a_release_made_here_and_stages_its_files(self):
+    def test_the_device_helper_accepts_a_release_made_here_and_switches_to_its_files(self):
         srv, base, out = self.release_on_server()
         rc, stdout = self.helper(base, 'check'); self.assertEqual(rc, 0, stdout)
         self.assertEqual(stdout.split(), ['update', '20261012.1', '0.1.1', 'stable', str(self.kernel.stat().st_size + self.system.stat().st_size), '0'])
         rc, stdout = self.helper(base, 'apply', '20261012.1'); self.assertEqual(rc, 0, stdout)
-        stage = self.d / 'flash/wispos/update'
-        self.assertEqual((stage / 'KERNEL.new').read_bytes(), self.kernel.read_bytes()); self.assertEqual((stage / 'SYSTEM.new').read_bytes(), self.system.read_bytes())
+        slot_b = self.d / 'flash/wispos/b'
+        self.assertEqual((slot_b / 'KERNEL').read_bytes(), self.kernel.read_bytes()); self.assertEqual((slot_b / 'SYSTEM').read_bytes(), self.system.read_bytes())
+        self.assertEqual((self.d / 'flash/extlinux/extlinux.conf').read_text().splitlines()[0], 'DEFAULT b'); self.assertIn('build_id=20261012.1', (self.d / 'flash/wispos/update/PENDING').read_text())
+        self.assertEqual((self.d / 'flash/KERNEL').read_bytes(), b'old kernel')                    # the running slot is untouched
 
     def test_an_edited_manifest_or_another_key_is_refused_by_the_device(self):
         srv, base, out = self.release_on_server()

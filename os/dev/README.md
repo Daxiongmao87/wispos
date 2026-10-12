@@ -53,6 +53,16 @@ and `GET /devices` on the listener returns the same JSON.
   `os/verify_image.py` fails if the release card has anything in `wispos/` besides `README.txt` and
   `wifi.conf.example`.
 
+## Trying the update path before anything is published: `test-release.sh`
+
+The update helper reads its source from the image. On a dev image only, `/storage/.config/wispos/update-dev.json` replaces it (and may allow plain http); a release image ignores the file. The signature and hash checks are unchanged: the test release is signed with the real release key, which every image trusts.
+
+    os/dev/test-release.sh                     # builds release 'build+1, patch+1' of the candidate in out/SYSTEM and serves it on http://THIS-HOST:8765/
+    os/dev/test-release.sh --broken            # the same, but the new system cannot start: the card must return to the old slot by itself
+    ssh root@DEVICE 'printf "{\"manifest_url\": \"http://THIS-HOST:8765/manifest.json\", \"allow_http\": true}\n" > /storage/.config/wispos/update-dev.json'
+
+Then Steam > Settings > System > Software Updates, or on the device `/usr/lib/wispos/wisp-update check`, `apply BUILD`, `status`. The script prints the exact lines for the build it made. Remove the json file to go back to the image's own source. The files live under the work tree (`test-release/BUILD/release`), never in the repository. `serve_release.py DIR` is the server on its own: files of one directory only, no links, Range support.
+
 ## Watching a device without writing to its card: `log-stream.sh`
 
 The card is written as little as possible, in dev too (operator, 2026-10-11). Logs and samples therefore travel over ssh to the HDD of the developer machine and nothing is kept on the device:

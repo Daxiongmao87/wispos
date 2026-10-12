@@ -44,8 +44,11 @@ if [ -z "$VARIANT" ]; then
     tar -xzf "$DL/SDL2-2.32.10.tar.gz" -C "$T/sdlinc/SDL2" --strip-components=2 --wildcards 'SDL2-2.32.10/include/*.h'
     tar -xzf "$DL/SDL2_ttf-2.20.2.tar.gz" -C "$T/sdlinc/SDL2" --strip-components=1 SDL2_ttf-2.20.2/SDL_ttf.h
     tar -xzf "$DL/SDL2_image-2.8.2.tar.gz" -C "$T/sdlinc/SDL2" --strip-components=2 SDL2_image-2.8.2/include/SDL_image.h
-    mkdir -p "$OUT/setup"; LIB=$T/tree/usr/lib
-    aarch64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -I"$T/sdlinc" -o "$OUT/setup/wisp-setup" "$HERE/setup/wisp-setup.c" \
+    mkdir -p "$OUT/setup" "$OUT/bootscreen"; LIB=$T/tree/usr/lib
+    # The boot screen's glyph atlases and badge, from the image's own Liberation Sans files (the same generator and inputs as os/boot/make-initramfs.sh): the first-run hand-over draws the
+    # boot screen's last picture itself (setup/bootframe.c, with the drawing code the boot screens share) and the Wayland boot screen below uses the same header.
+    python3 -I "$HERE/ui/gen_assets.py" --fonts "$T/tree/usr/share/fonts/liberation" --badge "$HERE/setup/assets/wispos-badge.png" --out "$OUT/bootscreen/wisp-ui-assets.h"
+    aarch64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -I"$T/sdlinc" -I"$HERE/setup" -I"$HERE/splash" -I"$HERE/ui" -I"$OUT/bootscreen" -o "$OUT/setup/wisp-setup" "$HERE/setup/wisp-setup.c" "$HERE/setup/bootframe.c" \
         "$LIB/libSDL2-2.0.so.0" "$LIB/libSDL2_ttf-2.0.so.0" "$LIB/libSDL2_image-2.0.so.0" -lm -lpthread -Wl,-rpath-link,"$LIB"
     export WISP_SETUP_BIN=$OUT/setup/wisp-setup
     # The daemon behind Steam's SteamOS calls (steamos/wisp-steamos-manager.c): systemd's public headers only (hash-pinned, steamos/fetch-sdbus-headers.sh), linked against the
@@ -58,6 +61,25 @@ if [ -z "$VARIANT" ]; then
     mkdir -p "$OUT/reclaim"
     aarch64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -o "$OUT/reclaim/wisp-ui-reclaim" "$HERE/reclaim/wisp-ui-reclaim.c"
     export WISP_UI_RECLAIM_BIN=$OUT/reclaim/wisp-ui-reclaim
+    # The gamepad as pointer and keyboard in desktop mode (pad/wisp-pad.c): libc and libm, no other library.
+    mkdir -p "$OUT/pad"
+    aarch64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -o "$OUT/pad/wisp-pad" "$HERE/pad/wisp-pad.c" "$HERE/pad/pad-io.c" "$HERE/pad/pad-logic.c" -lm
+    export WISP_PAD_BIN=$OUT/pad/wisp-pad
+    # The desktop-mode shell (dock/shell.c): the Wayland protocol code is generated from definitions fetched at pinned commits (dock/prepare-build.sh, which also copies the headers of
+    # FreeType, libpng and libwayland-client from the host's development packages); it links against the libraries already in the image, so nothing extra ships.
+    bash "$HERE/dock/prepare-build.sh" "$WORK" >/dev/null
+    DG=$WORK/dockgen; DI=$WORK/dockinc; mkdir -p "$OUT/dock"
+    aarch64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -I"$DG" -I"$DI" -I"$DI/freetype2" -I"$HERE/dock" -o "$OUT/dock/wisp-dock" \
+        "$HERE"/dock/shell.c "$HERE"/dock/ui.c "$HERE"/dock/view.c "$HERE"/dock/render.c "$HERE"/dock/model.c "$HERE"/dock/sysinfo.c "$HERE"/dock/swayipc.c "$HERE"/dock/downloads.c \
+        "$DG"/wlr-layer-shell-unstable-v1-protocol.c "$DG"/wlr-foreign-toplevel-management-unstable-v1-protocol.c "$DG"/xdg-shell-protocol.c "$DG"/cursor-shape-v1-protocol.c "$DG"/tablet-v2-protocol.c \
+        "$LIB/libwayland-client.so.0" "$LIB/libfreetype.so.6" "$LIB/libpng16.so.16" -lm -Wl,-rpath-link,"$LIB"
+    export WISP_DOCK_BIN=$OUT/dock/wisp-dock
+    # The Wayland phase of the boot screen (splash/wisp-bootscreen.c): the same drawing code as the initramfs splash (splash/scene.h) and the atlases generated above, the Wayland protocol
+    # code the dock already needs, and the libwayland-client in the image.
+    aarch64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -I"$DG" -I"$DI" -I"$HERE/splash" -I"$HERE/ui" -I"$OUT/bootscreen" -o "$OUT/bootscreen/wisp-bootscreen" "$HERE/splash/wisp-bootscreen.c" \
+        "$DG"/wlr-layer-shell-unstable-v1-protocol.c "$DG"/wlr-foreign-toplevel-management-unstable-v1-protocol.c "$DG"/xdg-shell-protocol.c \
+        "$LIB/libwayland-client.so.0" -lm -Wl,-rpath-link,"$LIB"
+    export WISP_BOOTSCREEN_BIN=$OUT/bootscreen/wisp-bootscreen
     # The libraries Steam's client needs that this root lacks (stage_rootfs.STEAM_LIB_PACKAGES): the pinned packages from steam/native-libs.lock.json.
     STEAM_PACKAGES=$(python3 -I -c 'import json,sys; sys.path.insert(0, sys.argv[2]); import stage_rootfs as s; p={x["package"]:x for x in json.load(open(sys.argv[1]))["packages"]}; [print(p[n]["url"], p[n]["sha256"]) for n in s.STEAM_LIB_PACKAGES]' "$HERE/../steam/native-libs.lock.json" "$HERE")
     mkdir -p "$DL/steam-debs"

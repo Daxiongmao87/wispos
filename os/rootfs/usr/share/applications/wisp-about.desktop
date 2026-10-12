@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=About
+Exec=foot --app-id=wisp-about wisp-about
+Icon=wisp-about
+StartupWMClass=wisp-about
+Categories=System;

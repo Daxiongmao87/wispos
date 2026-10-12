@@ -22,7 +22,8 @@ ExecStartPre=-/usr/bin/wisp-splash-say --ready
 # full 720x480 and the default display (half resolution) is restored when setup is done, before the Steam session starts.
 ExecStartPre=-/usr/bin/wisp-display native
 ExecStartPre=-/usr/bin/wisp-screen inhibit on
-ExecStart=/usr/bin/wisp-setup --badge /usr/share/wispos/wispos-badge.png
+# --intro: the first-run hand-over from the boot screen (3 s, played once: the marker is created when it ends). Without the marker file and with a screen to show, it plays.
+ExecStart=/usr/bin/wisp-setup --badge /usr/share/wispos/wispos-badge.png --intro /storage/.config/wispos/intro-played
 ExecStartPost=-/usr/bin/wisp-screen inhibit off
 ExecStartPost=-/usr/bin/wisp-display default
 # The session unit is ordered after this one but is skipped (and not retried) if it was evaluated while setup was still failing and

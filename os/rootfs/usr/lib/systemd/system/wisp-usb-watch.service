@@ -1,0 +1,11 @@
+# The USB host-mode watcher (docs/WISPOS-OS-DESIGN.md, "USB-C: power and data together", rules 3 and 4): it ends host mode when external power appears or the battery falls below
+# the floor. Started by `wisp-usb host`, stopped when host mode ends; it sleeps on the kernel's uevent socket, so it costs nothing while it waits and exists only while host mode is on.
+# NOT enabled in any target, on purpose: host mode is off at every boot and nothing starts the watcher until the user turns it on. If it crashes while host mode is on, systemd
+# brings it back (the kernel's own refusal to drive VBUS into an external supply does not depend on it).
+[Unit]
+Description=WispOS USB host mode watcher
+
+[Service]
+ExecStart=/usr/bin/wisp-usb watch
+Restart=on-failure
+RestartSec=2

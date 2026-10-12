@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Game mode
+Exec=wisp-session-select game
+Icon=wisp-game
+Categories=Game;

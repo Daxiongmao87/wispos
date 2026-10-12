@@ -31,6 +31,9 @@ OUT=$WORK/out; STAGE=$WORK/image
 if [ -n "${WISP_SSH_KEY:-}${WISP_WIFI_CONF:-}${WISP_DEV_ANNOUNCE:-}" ] && [ "${WISP_DEV:-}" != 1 ]; then
     echo "refusing: WISP_SSH_KEY / WISP_WIFI_CONF / WISP_DEV_ANNOUNCE put credentials or a developer address in the image; that needs WISP_DEV=1 (dev build)" >&2; exit 2
 fi
+if [ -n "${WISP_QEMU_CARD:-}" ] && [ "${WISP_DEV:-}" != 1 ]; then
+    echo "refusing: WISP_QEMU_CARD makes a card for QEMU's virtual machine (no device-tree lines, serial console on ttyAMA0); that needs WISP_DEV=1 (dev build)" >&2; exit 2
+fi
 DEFAULT_NAME=wispos-rg34xxsp.img; [ "${WISP_DEV:-}" = 1 ] && DEFAULT_NAME=wispos-rg34xxsp-dev.img
 IMG=$OUT/${WISP_IMAGE_NAME:-$DEFAULT_NAME}
 KERNEL_IMG=${WISP_KERNEL_IMAGE:-$OUT/kernel/Image}
@@ -57,15 +60,37 @@ cp "$OUT/kernel/overlays/"*.dtbo "$STAGE/boot/overlays/"
 # console keeps filling behind it, so SELECT shows the real boot log. `quiet loglevel=3` keeps the kernel's early text off the panel until the splash starts, and
 # systemd.show_status=true keeps systemd's own lines (which `quiet` would hide) in the log you get with SELECT. logo.nologo and the cursor setting remove the penguin and
 # the blinking block. A dev image is not quiet (the kernel text is on the UART and in the log view) and says so on the splash (wisp.dev).
-BOOT_ARGS="boot=LABEL=ROCKNIX disk=LABEL=STORAGE console=ttyS0,115200 console=tty0 systemd.debug_shell=ttyS0 logo.nologo vt.global_cursor_default=0"
+# panic=10: a kernel panic restarts the handheld after 10 s instead of hanging for ever, so a new version that panics is counted as a start and the card goes back to the previous
+# version by itself (docs/WISPOS-UPDATE-DESIGN.md "Boot slots"); without it that failure needed a finger on Power.
+BOOT_ARGS="boot=LABEL=ROCKNIX disk=LABEL=STORAGE console=ttyS0,115200 console=tty0 systemd.debug_shell=ttyS0 logo.nologo vt.global_cursor_default=0 panic=10"
 if [ "${WISP_DEV:-}" = 1 ]; then BOOT_ARGS="$BOOT_ARGS wisp.dev"; else BOOT_ARGS="$BOOT_ARGS quiet loglevel=3 systemd.show_status=true"; fi
+# TWO slots (docs/WISPOS-UPDATE-DESIGN.md, "Boot slots"): the system on the card is slot a (/KERNEL, /SYSTEM); slot b (/wispos/b/KERNEL, /wispos/b/SYSTEM) is empty until the first
+# update, which is written there, verified, and only then switched by changing ONE LETTER in place: the first line, "DEFAULT a" -> "DEFAULT b". That line must stay the first and
+# stay exactly that form (the initramfs step os/boot/wisp-boot.sh and wisp-update both check it before touching anything). Each label's wisp.slot= tells the initramfs which
+# slot it is starting. U-Boot starts DEFAULT without a menu (no PROMPT/MENU/TIMEOUT: boot/pxe_utils.c, common/menu.c menu_get_choice) and, if it cannot LOAD that label's kernel,
+# tries the other label (boot_unattempted_labels). A kernel that loads and then dies before its initramfs is counted by U-Boot's boot-trial script (os/boot/uboot/wisp-trial.txt,
+# built into the bootloader): after two such starts it boots extlinux/rollback.conf, the same two labels with DEFAULT a for ever, and the previous version's initramfs finishes the
+# bookkeeping. (Power-cycling the handheld is what makes those starts happen: nothing restarts a dead kernel by itself.)
 cat >"$STAGE/boot/extlinux/extlinux.conf" <<EOF
-LABEL WispOS
+DEFAULT a
+LABEL a
   LINUX /KERNEL
   FDT /dtb.img
-  APPEND $BOOT_ARGS
+  APPEND $BOOT_ARGS wisp.slot=a
+  FDTOVERLAYS /overlays/sun50i-h700-anbernic-rg35xx-2024-ddr3.dtbo
+LABEL b
+  LINUX /wispos/b/KERNEL
+  FDT /dtb.img
+  APPEND $BOOT_ARGS wisp.slot=b
   FDTOVERLAYS /overlays/sun50i-h700-anbernic-rg35xx-2024-ddr3.dtbo
 EOF
+# A QEMU test card, booted by U-Boot's own qemu_arm64 build (os/boot/build-uboot-qemu.sh, os/qemu-update-test.sh): that machine has its own device tree, which U-Boot passes on when no
+# FDT line is given, and its serial port is ttyAMA0 (listed last, so it is /dev/console). Dev builds only (guarded above).
+if [ -n "${WISP_QEMU_CARD:-}" ]; then
+    sed -i -e '/^  FDT\(OVERLAYS\)\? /d' -e 's/^\(  APPEND .*\)$/\1 console=ttyAMA0 loglevel=7/' "$STAGE/boot/extlinux/extlinux.conf"
+fi
+# The fixed rollback file (also after the QEMU edit above, so a test card has the same modifications): never edited by an update, which only flips the letter of extlinux.conf.
+sed '1s/.*/DEFAULT a/' "$STAGE/boot/extlinux/extlinux.conf" >"$STAGE/boot/extlinux/rollback.conf"
 # Settings the operator can edit with the card in any PC (applied by wisp-firstboot at every boot).
 mkdir -p "$STAGE/boot/wispos"
 cat >"$STAGE/boot/wispos/README.txt" <<'EOT'
@@ -78,6 +103,10 @@ Optional files in this folder are applied at every boot:
                     (see wifi.conf.example). Joins that WPA2 network and keeps it.
   authorized_keys   OpenSSH public keys allowed to log in as root and as wisp.
   ssh               an empty file named "ssh": turns SSH on at the first boot (the Raspberry Pi convention).
+
+Two systems ("slots"): the extlinux/extlinux.conf file on this partition starts with "DEFAULT a" or "DEFAULT b" and that letter is the system the device starts. An update
+is written into the other slot and switched by changing that letter. If a device ever refuses to start after an update, put the card in any computer, open
+extlinux/extlinux.conf in a plain text editor and change the first line to the other letter ("DEFAULT a" <-> "DEFAULT b"); nothing else needs to change.
 
 SSH is OFF by default. Turn it on with that file, or on the device with `wisp-ssh on` (desktop mode's menu does the same);
 the choice persists. Then log in as user "wisp", password "wisp". The system partition is read-only, so the
