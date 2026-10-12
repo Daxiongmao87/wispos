@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/wispos-badge-readme.png" alt="WispOS" width="320"></p>
+
 # WispOS
 
 A single-purpose operating system for the **Anbernic RG34XX-SP** handheld (Allwinner H700, four Cortex-A53 cores, 1 GiB of RAM, a 720x480 panel): it boots into Steam's gamepad UI
@@ -32,5 +34,5 @@ Installed systems update from signed releases of this repository: `os/make-relea
 every image trusts. See `docs/WISPOS-UPDATE-DESIGN.md`.
 
 ## Licence
-No licence has been chosen yet, so for now all rights are reserved by the author. This will be settled before the first release. Third-party material keeps its own terms: the
-SteamOS interface definitions in `os/steamos/interfaces/` are MIT-licensed by their authors (the notices are in the files).
+MIT, see `LICENSE` (copyright 2026 Daxiongmao87). Third-party material keeps its own terms: the SteamOS interface definitions in `os/steamos/interfaces/` are MIT-licensed by their
+authors (the notices are in the files), and the OS image built from this repository contains many other projects under their own licences.
