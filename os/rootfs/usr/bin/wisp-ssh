@@ -9,7 +9,8 @@ is_on() { [ -e "$FLAG" ]; }
 status() {
     if is_on; then
         echo "ssh: on"; echo "host name: $(hostname 2>/dev/null)"
-        for a in $(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}'); do echo "address: $a"; done
+        # the plainest `ip` call: iproute2 and BusyBox both print "    inet 10.0.0.5/24 ..." lines for it (BusyBox's applet has no -o or scope filter)
+        for a in $(ip -4 addr show 2>/dev/null | awk '$1 == "inet" {sub(/\/.*/, "", $2); print $2}' | grep -v '^127\.'); do echo "address: $a"; done
         echo "log in as: wisp (the password is in the image's README on the boot partition) or with keys from authorized_keys"
         return 0
     fi

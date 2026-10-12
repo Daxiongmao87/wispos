@@ -130,6 +130,14 @@ class SshSwitchTests(unittest.TestCase):
         run('toggle'); self.assertTrue(flag.exists())                                        # and back on
         self.assertEqual(run('bogus').returncode, 2)
 
+    def test_status_lists_the_addresses_but_not_loopback_with_the_plain_ip_output_both_ip_implementations_give(self):
+        root, flag, calls, run = self.run_ssh()
+        fake_ip = root / 'bin'; fake_ip.mkdir(); (fake_ip / 'ip').write_text('#!/bin/sh\n[ "$*" = "-4 addr show" ] || exit 1\ncat <<EOF\n1: lo: <LOOPBACK,UP> mtu 65536\n    inet 127.0.0.1/8 scope host lo\n2: wlan0: <UP> mtu 1500\n    inet 192.0.2.7/24 brd 192.0.2.255 scope global wlan0\nEOF\n'); (fake_ip / 'ip').chmod(0o755)
+        env = {**_os.environ, 'WISP_SSH_FLAG': str(flag), 'WISP_SYSTEMCTL': str(root / 'systemctl'), 'PATH': '%s:%s' % (fake_ip, _os.environ['PATH'])}
+        flag.parent.mkdir(parents=True); flag.write_text('')
+        out = _sp.run(['sh', str(self.SCRIPT), 'status'], capture_output=True, text=True, env=env)
+        self.assertEqual(out.returncode, 0); self.assertIn('address: 192.0.2.7', out.stdout); self.assertNotIn('127.0.0.1', out.stdout)
+
     def test_a_failed_start_is_an_error_not_a_silent_success(self):
         root, flag, calls, run = self.run_ssh(fail_start=True)
         r = run('on'); self.assertEqual(r.returncode, 1); self.assertIn('did not start', r.stderr)
