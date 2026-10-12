@@ -1,4 +1,9 @@
-<p align="center"><img src="docs/brand/wispos-badge-readme.png" alt="WispOS" width="320"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wispos-badge-dark.png">
+    <img src="docs/brand/wispos-badge-light.png" alt="WispOS" width="160">
+  </picture>
+</p>
 
 # WispOS
 
