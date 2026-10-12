@@ -71,7 +71,7 @@ def rows(tree, extlinux_text):
     wisp = shadow.get('wisp', '')
     default_pw = bool(wisp) and wisp == accounts.sha512_crypt(accounts.SPEC['password'])
     add('wisp_password', "the `wisp` account's password", "the publicly known default 'wisp'" if default_pw else ('none' if wisp in ('', '*', '!') else 'a custom hash'),
-        "the operator's call (with SSH off by default it is only reachable on the console)", 'DECISION' if default_pw else 'OK')
+        "a known default is the convention for these devices (SteamOS deck/deck, Bazzite): ACCEPTED by the operator 2026-10-12; with SSH off by default it is reachable on the console only", 'ACCEPTED' if default_pw else 'OK')
     add('root_password', 'root has no password', 'none (key only)' if shadow.get('root') in ('*', '!', '!!') else 'a password is set', 'none (key only)', 'OK' if shadow.get('root') in ('*', '!', '!!') else 'DIFFERS')
     unit = tree / 'usr/lib/systemd/system/sshd.service'
     conditional = unit.exists() and 'ConditionPathExists=/storage/.config/wispos/ssh-enabled' in unit.read_text()
@@ -79,7 +79,7 @@ def rows(tree, extlinux_text):
     add('sshd_enabled', 'sshd starts at boot', 'only while the user turned it on (flag file; `wisp-ssh`)' if conditional else ('yes (%s)' % ', '.join(sshd_on) if sshd_on else 'no'),
         'off by default, a persistent toggle (desktop mode), on by default on dev images (operator, 2026-10-11)', 'OK' if conditional or not sshd_on else 'DIFFERS')
     pa = sshd_directive(tree, 'PasswordAuthentication')
-    add('ssh_password_auth', 'PasswordAuthentication while sshd is on', pa or 'not set', "the operator's call", 'DECISION' if pa == 'yes' else 'OK')
+    add('ssh_password_auth', 'PasswordAuthentication while sshd is on', pa or 'not set', "password login only while the user has turned SSH on (off by default): ACCEPTED by the operator 2026-10-12", 'ACCEPTED' if pa == 'yes' else 'OK')
     prl = sshd_directive(tree, 'PermitRootLogin')
     add('ssh_root_login', 'PermitRootLogin', prl or 'not set (the default)', 'prohibit-password or no', 'OK' if prl in ('prohibit-password', 'no', 'without-password', None) else 'DIFFERS')
     append = re.search(r'^\s*APPEND\s+(.*)$', extlinux_text or '', re.M)
@@ -107,9 +107,10 @@ def rows(tree, extlinux_text):
         'WispOS, our version and build id', 'OK' if 'ID="wispos"' in osr and 'ROCKNIX' not in osr else 'DIFFERS')
     src = (tree / 'usr/share/wispos/update.conf').exists() and (tree / 'usr/share/wispos/update-key.pub').exists()
     add('update_source', 'an update source and signing key are baked in', 'yes' if src else 'no (the helper says "no update source is configured")', 'yes, from the release process', 'OK' if src else 'DIFFERS')
-    bench, has_tool = tree / 'usr/share/wispos/usb-host-bench', (tree / 'usr/bin/wisp-usb').exists()
-    add('usb_host_bench', 'USB host mode has its bench-test result recorded (spike S-USB)', ('recorded: ' + bench.read_text().strip()) if bench.exists() else ('not recorded' if has_tool else 'no host-mode tool in this image'),
-        'the bench result written in docs/WISPOS-OS-DESIGN.md and named at build time (WISP_USB_HOST_BENCH)', 'OK' if bench.exists() or not has_tool else 'DIFFERS')
+    bench, has_tool, off = tree / 'usr/share/wispos/usb-host-bench', (tree / 'usr/bin/wisp-usb').exists(), tree / 'usr/share/wispos/usb-host-disabled'
+    add('usb_host_bench', 'USB host mode has its bench-test result recorded (spike S-USB), or is switched off', ('recorded: ' + bench.read_text().strip()) if bench.exists() else
+        ('switched off in this image (no bench result; operator 2026-10-12)' if off.exists() and has_tool else 'not recorded' if has_tool else 'no host-mode tool in this image'),
+        'the bench result written in docs/WISPOS-OS-DESIGN.md and named at build time (WISP_USB_HOST_BENCH), or host mode switched off', 'OK' if bench.exists() or off.exists() or not has_tool else 'DIFFERS')
     return r
 
 

@@ -181,10 +181,13 @@ STEAM_LIB_PACKAGES = ('libibus-1.0-5', 'libasyncns0', 'libbrotli1', 'libssh2-1t6
 def install_usb_host_bench(tree):
     """The record that USB host mode passed its bench tests (docs/WISPOS-OS-DESIGN.md, spike S-USB). Operator rule, 2026-10-11: the host toggle ships in a release only after the bench
     test (an OTG adapter, external power appearing, 10 plug cycles, a USB-C meter) passed and its result is written in that document. WISP_USB_HOST_BENCH names the record (one line, e.g.
-    'T1-T4 passed 2026-10-20, docs/WISPOS-OS-DESIGN.md "Phase 2 results"'); without it the image carries no marker, check_release.py reports a gap and make-release.py refuses."""
+    'T1-T4 passed 2026-10-20, docs/WISPOS-OS-DESIGN.md "Phase 2 results"'). WITHOUT it host mode is SWITCHED OFF in the image (operator, 2026-10-12: no bench meter, no host mode in 0.1.0):
+    the marker usr/share/wispos/usb-host-disabled makes `wisp-usb host` refuse; the code, the quick-settings segment and the kernel gate (peripheral-only by default) stay."""
     ref = os.environ.get('WISP_USB_HOST_BENCH', '').strip()
-    if not ref: return
     share = tree / 'usr/share/wispos'; share.mkdir(parents=True, exist_ok=True)
+    if not ref:
+        (share / 'usb-host-disabled').write_text('host mode is not part of this release: no bench result is recorded (docs/WISPOS-OS-DESIGN.md, spike S-USB)\n'); return
+    (share / 'usb-host-disabled').unlink(missing_ok=True)
     (share / 'usb-host-bench').write_text(ref + '\n')
 
 

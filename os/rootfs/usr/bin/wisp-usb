@@ -31,6 +31,7 @@ DEV_MAC = '82:57:49:53:50:01'                                            # fixed
 
 # Words for the menu. Each reason has the sentence for a refusal and, where the watcher can end a running host mode for it, the sentence for that.
 REASONS = {
+    'not-released': ('Host mode is not part of this release.', None),
     'no-gate': ('This kernel cannot keep the host role off, so host mode is not offered.', None),
     'no-udc': ('This device has no USB device controller.', None),
     'unknown-external': ('Cannot tell whether external power is connected.', 'Host mode ended: cannot tell whether external power is connected.'),
@@ -48,6 +49,7 @@ class Facts:
     computer_on: bool = False  # the gadget is bound to the controller
     external: bool = None     # True/False: some non-battery supply is/is not online; None: cannot tell
     battery: int = None       # percent; None: cannot tell
+    released: bool = True     # False when the image carries usr/share/wispos/usb-host-disabled: host mode is switched off in this release (no bench result recorded)
 
 
 def read(path, default=None):
@@ -63,6 +65,7 @@ def write(path, value):
 
 def read_facts():
     f = Facts()
+    f.released = not os.path.exists(ROOT + '/usr/share/wispos/usb-host-disabled')
     gates = sorted(glob.glob(ROOT + '/sys/bus/platform/drivers/sun4i-usb-phy/*/host_enable'))
     if gates: f.gate, f.host_on = gates[0], read(gates[0]) == '1'
     udcs = sorted(os.listdir(ROOT + '/sys/class/udc')) if os.path.isdir(ROOT + '/sys/class/udc') else []
@@ -86,6 +89,7 @@ def read_facts():
 
 def host_check(f, floor=FLOOR):
     """Why host mode may not be (or stay) on right now: a key of REASONS, or None. Pure. The one place the operator's rules 2 and 4 are written."""
+    if not f.released: return 'not-released'
     if f.gate is None: return 'no-gate'
     if f.external is None: return 'unknown-external'
     if f.external: return 'external'
@@ -100,7 +104,7 @@ def decide(request, f, floor=FLOOR):
     if request == 'computer': return ('do', None) if f.udc else ('unavailable', 'no-udc')
     if request == 'host':
         key = host_check(f, floor)
-        if key == 'no-gate': return 'unavailable', key
+        if key in ('no-gate', 'not-released'): return 'unavailable', key
         return ('refuse', key) if key else ('do', None)
     raise ValueError(request)
 

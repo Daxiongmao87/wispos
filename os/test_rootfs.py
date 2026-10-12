@@ -313,8 +313,10 @@ class StageRootfsTests(unittest.TestCase):
         root = self.tree()
         with unittest.mock.patch.dict(_os.environ, {'WISP_USB_HOST_BENCH': ''}): stage_rootfs.install_usb_host_bench(root)
         self.assertFalse((root / 'usr/share/wispos/usb-host-bench').exists())
+        self.assertTrue((root / 'usr/share/wispos/usb-host-disabled').is_file())                         # no record: host mode is switched off in the image
         with unittest.mock.patch.dict(_os.environ, {'WISP_USB_HOST_BENCH': ' T1-T4 passed 2026-10-20 '}): stage_rootfs.install_usb_host_bench(root)
         self.assertEqual((root / 'usr/share/wispos/usb-host-bench').read_text(), 'T1-T4 passed 2026-10-20\n')
+        self.assertFalse((root / 'usr/share/wispos/usb-host-disabled').exists())                         # a record: it is on
 
     def test_overlay_never_copies_host_python_bytecode(self):
         root, src = self.tree(), Path(_tf.mkdtemp(prefix='wispos-overlay-'))
@@ -1450,7 +1452,7 @@ class CheckReleaseTests(unittest.TestCase):
 
     def test_a_tree_with_todays_defaults_reports_the_known_gaps_and_the_decisions(self):
         r = self.rows(self.tree(), 'LABEL x\n  APPEND boot=LABEL=ROCKNIX console=ttyS0,115200 systemd.debug_shell=ttyS0\n')
-        self.assertEqual({k: v['status'] for k, v in r.items() if k in ('wisp_password', 'ssh_password_auth')}, {'wisp_password': 'DECISION', 'ssh_password_auth': 'DECISION'})
+        self.assertEqual({k: v['status'] for k, v in r.items() if k in ('wisp_password', 'ssh_password_auth')}, {'wisp_password': 'ACCEPTED', 'ssh_password_auth': 'ACCEPTED'})
         for key in ('sshd_enabled', 'update_source'): self.assertEqual(r[key]['status'], 'DIFFERS', key)
         for key in ('debug_shell_arg', 'serial_console_arg'): self.assertEqual(r[key]['status'], 'OK', key)          # ROCKNIX's own convention, kept (operator, 2026-10-11)
         for key in ('root_password', 'ssh_root_login', 'tty9_shell', 'rocknix_units', 'os_release_identity'): self.assertEqual(r[key]['status'], 'OK', key)
@@ -1469,6 +1471,8 @@ class CheckReleaseTests(unittest.TestCase):
         self.assertEqual(self.rows(root)['usb_host_bench']['status'], 'OK')                                 # no host-mode tool in the image: nothing to prove
         (root / 'usr/bin/wisp-usb').write_text('#!/bin/sh\n')
         self.assertEqual(self.rows(root)['usb_host_bench']['status'], 'DIFFERS')
+        (root / 'usr/share/wispos/usb-host-disabled').write_text('off\n'); r = self.rows(root)['usb_host_bench']                       # switched off: nothing to prove
+        self.assertEqual(r['status'], 'OK'); self.assertIn('switched off', r['current']); (root / 'usr/share/wispos/usb-host-disabled').unlink()
         (root / 'usr/share/wispos/usb-host-bench').write_text('T1-T4 passed\n')
         r = self.rows(root)['usb_host_bench']; self.assertEqual(r['status'], 'OK'); self.assertIn('T1-T4 passed', r['current'])
 

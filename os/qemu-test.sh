@@ -62,10 +62,10 @@ SSH_STATUS=$(as_root 'wisp-ssh status'; echo "exit=$?"); echo "    wisp-ssh stat
 check "wisp-ssh status reports on (exit 0) with the host name and an address" "[[ \"\$SSH_STATUS\" == *'ssh: on'* && \"\$SSH_STATUS\" == *'address: '* && \"\$SSH_STATUS\" == *'exit=0' ]]"
 # --- The USB-C port tool (docs/WISPOS-OS-DESIGN.md): this VM has no USB controller and its kernel has no host gate, so the tool must say so, refuse, and change nothing -------------
 USB_STATUS=$(as_root 'wisp-usb status'; echo "exit=$?")
-check "wisp-usb status: off, and neither host mode (no kernel gate) nor computer mode (no controller) is offered here" \
-    "[[ \"\$USB_STATUS\" == *'usb: off'* && \"\$USB_STATUS\" == *'host: unavailable: This kernel cannot keep the host role off'* && \"\$USB_STATUS\" == *'computer: unavailable: This device has no USB device controller'* && \"\$USB_STATUS\" == *'exit=0' ]]"
+check "wisp-usb status: off, and neither host mode (switched off in this release) nor computer mode (no controller) is offered here" \
+    "[[ \"\$USB_STATUS\" == *'usb: off'* && \"\$USB_STATUS\" == *'host: unavailable: Host mode is not part of this release.'* && \"\$USB_STATUS\" == *'computer: unavailable: This device has no USB device controller'* && \"\$USB_STATUS\" == *'exit=0' ]]"
 USB_HOST_RC=$(as_root 'wisp-usb host >/dev/null 2>&1; echo $?'); USB_OFF_RC=$(as_root 'wisp-usb off >/dev/null 2>&1; echo $?')
-check "wisp-usb host refuses without the kernel gate (exit 4) and starts no watcher; wisp-usb off succeeds" \
+check "wisp-usb host refuses, host mode being switched off in this release (exit 4) and starts no watcher; wisp-usb off succeeds" \
     "[ '$USB_HOST_RC' = 4 ] && [ '$USB_OFF_RC' = 0 ] && [ \"\$(as_root 'systemctl is-active wisp-usb-watch.service')\" != active ]"
 check "ROCKNIX's usbgadget and MTP daemon are gone (nothing else may switch the port role)" "! as_root 'ls /usr/bin/usbgadget /usr/sbin/umtprd /etc/umtprd'"
 # --- The SteamOS contract daemon, started by the buses (docs/WISPOS-STEAMOS-CONTRACT.md) -------------

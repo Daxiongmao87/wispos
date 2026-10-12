@@ -93,6 +93,13 @@ class DecisionTable(Base):
         self.assertEqual(self.m.decide('host', self.facts(gate=None)), ('unavailable', 'no-gate'))
         self.assertEqual(self.m.decide('host', self.facts(gate=None, external=True)), ('unavailable', 'no-gate'))      # not even the power question matters
 
+    def test_a_release_without_a_bench_result_does_not_offer_host_mode_whatever_else_is_true(self):
+        d = self.m.decide
+        self.assertEqual(d('host', self.facts(released=False)), ('unavailable', 'not-released'))
+        self.assertEqual(d('host', self.facts(released=False, gate=None)), ('unavailable', 'not-released'))           # before the other questions
+        self.assertEqual(d('computer', self.facts(released=False)), ('do', None)); self.assertEqual(d('off', self.facts(released=False)), ('do', None))      # only host mode is switched off
+        self.assertEqual(d('host', self.facts()), ('do', None))                                                          # the default Facts are released: nothing changes without the marker
+
     def test_computer_needs_a_controller_and_off_needs_nothing(self):
         d = self.m.decide
         self.assertEqual(d('computer', self.facts()), ('do', None))
@@ -146,6 +153,13 @@ class Commands(Base):
         self.assertEqual(code, 0, err); self.assertEqual(self.gate(), '1')
         self.assertIn('systemctl-test start wisp-usb-watch.service', self.commands())
         self.assertIn('usb: host', out)
+
+    def test_host_in_an_image_with_the_disabled_marker_is_unavailable_and_never_touches_the_gate(self):
+        m = self.fake(); (self.root / 'usr/share/wispos').mkdir(parents=True); (self.root / 'usr/share/wispos/usb-host-disabled').write_text('off\n')
+        code, out, err = self.run_cmd(m, 'host'); self.assertEqual(code, 4); self.assertIn('Host mode is not part of this release.', err)
+        self.assertEqual(self.gate(), '0'); self.assertEqual(self.commands(), [])
+        code, out, err = self.run_cmd(m, 'status'); self.assertIn('host: unavailable: Host mode is not part of this release.', out); self.assertIn('usb: off', out)
+        self.assertEqual(self.run_cmd(m, 'computer')[0], 0)                                                              # computer mode is unaffected
 
     def test_host_with_external_power_is_refused_and_changes_nothing(self):
         m = self.fake(usb_online='1'); code, out, err = self.run_cmd(m, 'host')
