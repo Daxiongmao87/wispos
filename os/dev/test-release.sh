@@ -1,9 +1,10 @@
 #!/bin/bash
 # A signed TEST release of the current candidate for exercising the on-device update path before anything is published (docs/WISPOS-NOTES.md "Next device session", item 5).
 #
-#   os/dev/test-release.sh [--broken | --dead-kernel] [--build-id YYYYMMDD.N] [--version X.Y.Z] [--port 8765] [--address IP] [--no-serve] [WORKDIR]
+#   os/dev/test-release.sh [--release] [--broken | --dead-kernel] [--build-id YYYYMMDD.N] [--version X.Y.Z] [--port 8765] [--address IP] [--no-serve] [WORKDIR]
 #
-# It copies the candidate's SYSTEM with /etc/os-release changed to say it is a NEWER build (nothing else differs), signs a manifest for that with the REAL release key
+# It copies the candidate's DEV SYSTEM (out/variants/SYSTEM-dev: a dev device must stay a dev device, or its first update would replace the dev tools and the dev update override with the
+# release system's, found on the handheld 2026-10-12; --release uses out/SYSTEM instead) with /etc/os-release changed to say it is a NEWER build (nothing else differs), signs a manifest for that with the REAL release key
 # (~/.wispos-release/update-signing.pem, which the images trust; the files never leave this LAN unless you publish them), and serves the result on plain http (the signature and the
 # hashes still decide what is installed). KERNEL is the candidate's own. It then prints what to put on a DEV image so its update helper looks here.
 #   --broken   the new system cannot start (its systemd is missing, so the initramfs would stop at "Could not find systemd"; on trial it restarts by itself instead): three starts and the card is back on the old slot with nobody touching it.
@@ -13,15 +14,15 @@
 # Defaults: the build id and version are the candidate's with the sequence / patch number raised by one. Everything is written under WORKDIR/test-release (the HDD work tree).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); ROOT=$(cd "$HERE/../.." && pwd)
-BROKEN=; DEAD=; BUILD=; VERSION=; PORT=8765; ADDR=; SERVE=1; WORK=/mnt/hdd/wispos-staging/wispos-os-20261007
+BROKEN=; DEAD=; RELEASE=; BUILD=; VERSION=; PORT=8765; ADDR=; SERVE=1; WORK=/mnt/hdd/wispos-staging/wispos-os-20261007
 while [ $# -gt 0 ]; do
     case $1 in
-        --broken) BROKEN=1 ;; --dead-kernel) DEAD=1 ;; --build-id) BUILD=$2; shift ;; --version) VERSION=$2; shift ;; --port) PORT=$2; shift ;; --address) ADDR=$2; shift ;; --no-serve) SERVE= ;;
+        --broken) BROKEN=1 ;; --release) RELEASE=1 ;; --dead-kernel) DEAD=1 ;; --build-id) BUILD=$2; shift ;; --version) VERSION=$2; shift ;; --port) PORT=$2; shift ;; --address) ADDR=$2; shift ;; --no-serve) SERVE= ;;
         -*) echo "unknown option $1" >&2; exit 2 ;; *) WORK=$1 ;;
     esac; shift
 done
 case "$WORK" in /mnt/hdd/*) ;; *) echo "work directory must be on the HDD" >&2; exit 2 ;; esac
-SYSTEM=$WORK/out/SYSTEM; KERNEL=$WORK/out/kernel/Image; KEY=${WISP_RELEASE_KEY:-$HOME/.wispos-release/update-signing.pem}
+SYSTEM=$WORK/out/variants/SYSTEM-dev; { [ -z "$RELEASE" ] && [ -f "$SYSTEM" ]; } || SYSTEM=$WORK/out/SYSTEM; KERNEL=$WORK/out/kernel/Image; KEY=${WISP_RELEASE_KEY:-$HOME/.wispos-release/update-signing.pem}
 [ -z "$BROKEN" ] || [ -z "$DEAD" ] || { echo "--broken and --dead-kernel are two different experiments: pick one" >&2; exit 2; }
 for f in "$SYSTEM" "$KERNEL" "$KEY"; do [ -f "$f" ] || { echo "missing $f" >&2; exit 1; }; done
 read -r CUR_BUILD CUR_VERSION < <(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("build_id") or "", d["version"])' "$ROOT/manifest/lockfile.json")
@@ -66,7 +67,7 @@ python3 -I "$ROOT/os/make-release.py" build --kernel "$KERNEL" --system "$T/SYST
 rm -f "$T/SYSTEM" "$T/Image.dead"
 cat <<MSG
 
-Test release $BUILD ($VERSION) is in $T/release (signed with the real release key; made with --allow-gaps because the USB bench gate is open).
+Test release $BUILD ($VERSION) is in $T/release (signed with the real release key; made with --allow-gaps: a test release is never published).
 On a DEV image (it carries /usr/lib/wispos/DEV-BUILD; a release image ignores this file) point the update helper here:
 
     ssh root@DEVICE 'printf "{\"manifest_url\": \"http://$ADDR:$PORT/manifest.json\", \"allow_http\": true}\n" > /storage/.config/wispos/update-dev.json'

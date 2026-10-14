@@ -1,0 +1,22 @@
+         ${c2}.:ooo:
+      ${c2}:oOOOOOOO.
+     ${c2}oOOOOOOOo
+    ${c2}:OOOOOOOO:   oOOo
+    ${c2}OOOOOOOOOO  :OOOO:
+    ${c2}:OOOOOOOOOO: oOOOo
+     ${c2}oOOOOOOOOOOo.:OOOOo
+      ${c2}:OOOOOOOOOOOo :OOOO:
+        ${c2}:oOOOOOOOOOO..OOOOo
+           ${c2}:oOOOOOOOO  OOOOO
+              ${c2}.:OOOOOo :OOOOo
+     ${c2}.${c1}########   ${c2}:OOOO  OOOOO
+   ${c1}#############${c2}.  oOO. OOOOO:
+ ${c2}.${c1}################  ${c2}oO .OOOOO:
+ ${c1}##################  ${c2}o oOOOOO
+${c2}.${c1}##################   ${c2}:OOOOOo
+ ${c1}##################  ${c2}.OOOOOO
+ ${c1}#################  ${c2}.OOOOOO.
+  ${c2}:${c1}##############  ${c2}:OOOOOo
+    ${c2}:${c1}##########${c2}.  oOOOOO:
+        ${c2}...    :oOOOO:.
+           ${c2}.:oooo::

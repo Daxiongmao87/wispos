@@ -7,7 +7,7 @@ Requires=sway.service
 Conflicts=wisp-desktop.service
 After=sway.service seatd.service NetworkManager.service iwd.service rocknix-autostart.service wisp-setup.service
 # Wants, not Requires: if the screen cannot run at all (no display) the session still gets its own chance and its own skip rules.
-Wants=wisp-setup.service
+Wants=wisp-setup.service wisp-game-display.service wisp-home.service wisp-ui-priority.service
 RequiresMountsFor=/storage
 # Without the Steam runtime on /storage there is nothing to start; the unit is skipped, not failed.
 ConditionPathExists=/storage/wispos/runtime/READY

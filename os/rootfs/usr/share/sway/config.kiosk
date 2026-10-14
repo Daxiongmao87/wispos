@@ -4,8 +4,10 @@ exec_always mako
 # WispOS: without gamescope nothing makes a game fullscreen. Steam starts each game as its own X11 window with class steam_app_<id>; sway left it a
 # floating window with a title bar, smaller than the panel (BIT.TRIP RUNNER: 720x405 below a 25 px bar on the 720x480 panel). Give it the whole panel.
 for_window [class="^steam_app_.*"] border none, fullscreen enable
-# WispOS default: half resolution. Steam's UI and games are laid out for a 360x240 screen and sway scales that up 2x to the 720x480 panel: measured on the
-# handheld (2026-10-09) it feels more responsive and the GPU stays at its lowest clock while the UI animates; native 720x480 stays selectable (see the display settings).
-# Linear filtering: nearest showed heavy aliasing on the UI (a glyph is a few pixels tall at 360x240).
-output DSI-1 scale 2
+# WispOS default: the panel's own 720x480 (scale 1). Operator decision 2026-10-14 for the release: no half-resolution mode. It had been the default since 2026-10-09 (the UI laid out on
+# 360x240 and scaled up 2x, which felt more responsive and kept the GPU at its lowest clock), but Steam's per-game Game Resolution is not implemented (issue #1), Steam's own windows that
+# are sized for 720x480 (the screensaver, in-game menus) came out cropped to the top-left quarter, and every game needed the display switched before it started. With scale 1 the display
+# helpers (wisp-display, wisp-game-display, the launcher hook) switch from 1 to 1 and do nothing; the config below stays the one place the default is defined.
+# Linear filtering for the emulated lower modes Xwayland offers a game that asks for one (it is stretched to the panel).
+output DSI-1 scale 1
 output DSI-1 scale_filter linear

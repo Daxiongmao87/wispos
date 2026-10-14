@@ -274,8 +274,9 @@ static void screen_failed(App *a, int step, const char *title, const char *why, 
 static void screen_download(App *a) {
     left_column(1);
     int unpack = !strcmp(a->phase, "extract") || !strcmp(a->phase, "finish");
-    panel_title(!strcmp(a->phase, "extract") ? "Unpacking Steam" : !strcmp(a->phase, "finish") ? "Almost there" : "Downloading Steam",
-                unpack ? "Nearly done. Please don't turn the device off." : "This happens once, and can take a few minutes.");
+    int extract = !strcmp(a->phase, "extract");
+    panel_title(extract ? "Unpacking Steam" : !strcmp(a->phase, "finish") ? "Almost there" : "Downloading Steam",
+                extract ? "This might take a while. Please don't turn the device off." : unpack ? "Nearly done. Please don't turn the device off." : "This happens once, and can take a few minutes.");
     int y = 170, bw = PANEL_W;
     rrect(PANEL_X, y, bw, 12, RAD, C_LINE);
     int fw = (int)(bw * a->progress);                       /* fill: Steam's focus gradient #47bfff -> #1a44c2 over 60% */
@@ -285,8 +286,9 @@ static void screen_download(App *a) {
         SDL_RenderDrawLine(R, PANEL_X + xx, y, PANEL_X + xx, y + 11);
     }
     char s[80]; snprintf(s, sizeof s, "%d%%", (int)(a->progress * 100)); text(F_BODY, s, PANEL_X, y + 26, C_TEXT, 0, 0);
-    if (!unpack) { snprintf(s, sizeof s, "%ld of %ld MB", a->done_mb, a->total_mb); text(F_SMALL, s, PANEL_X + bw, y + 30, C_DIM, 2, 0); }
-    else spinner(PANEL_X + bw - 14, y + 40, 10, a->t);
+    if (!unpack || (extract && a->total_mb > 0)) { snprintf(s, sizeof s, "%ld of %ld MB", a->done_mb, a->total_mb); text(F_SMALL, s, PANEL_X + bw, y + 30, C_DIM, 2, 0); }
+    if (unpack) spinner(PANEL_X + 100, y + 36, 10, a->t);                                 /* beside the percentage: the step is alive */
+    if (extract) text(F_SMALL, "Writing Steam and its compatibility tool to the card.", PANEL_X, 262, C_DIM, 0, PANEL_W);
     text(F_SMALL, "Then you'll sign in to your Steam account.", PANEL_X, 300, C_DIM, 0, PANEL_W);
     check_icon(PANEL_X + 8, 372, C_OK); { char l[120]; snprintf(l, sizeof l, "Online via %s", a->ssid); text(F_SMALL, l, PANEL_X + 30, 362, C_DIM, 0, PANEL_W - 30); }
 }
@@ -322,7 +324,7 @@ static void demo_data(App *a, const char *state) {
     else if (!strcmp(state, "failed")) { a->st = ST_FAILED; snprintf(a->msg, 160, "Reason: Wrong password."); }
     else if (!strcmp(state, "nointernet")) { a->st = ST_NOINTERNET; snprintf(a->msg, 160, "It may need a sign-in page, or be blocking Steam."); }
     else if (!strcmp(state, "download")) { a->st = ST_DOWNLOAD; snprintf(a->phase, sizeof a->phase, "download"); }
-    else if (!strcmp(state, "extract")) { a->st = ST_DOWNLOAD; a->progress = 1; a->done_mb = a->total_mb; snprintf(a->phase, sizeof a->phase, "extract"); }
+    else if (!strcmp(state, "extract")) { a->st = ST_DOWNLOAD; a->progress = 0.45f; a->done_mb = 864; a->total_mb = 1920; snprintf(a->phase, sizeof a->phase, "extract"); }
     else if (!strcmp(state, "dlfailed")) { a->st = ST_DLFAILED; snprintf(a->msg, 160, "Lost the connection to Steam's servers."); }
 }
 
@@ -473,7 +475,7 @@ static int install_thread(void *p) {
             if (nm_parse_install_line(line, &ev) != INST_NONE) {
                 SDL_LockMutex(LOCK);
                 if (job == a->job) {
-                    if (ev.kind == INST_PHASE) snprintf(a->phase, sizeof a->phase, "%s", ev.text);
+                    if (ev.kind == INST_PHASE) { snprintf(a->phase, sizeof a->phase, "%s", ev.text); a->progress = 0; a->done_mb = a->total_mb = 0; }      /* a new phase starts its bar again: unpacking is not "100%" */
                     else if (ev.kind == INST_PROGRESS) { a->progress = (float)((double)ev.done / (double)ev.total); a->done_mb = (long)(ev.done >> 20); a->total_mb = (long)(ev.total >> 20); }
                 }
                 SDL_UnlockMutex(LOCK);

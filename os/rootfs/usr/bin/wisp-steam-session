@@ -23,7 +23,9 @@ for pair in root:. steam:. bin64:steamrtarm64 binarm64:steamrtarm64 \
             sdk64:linuxarm64 sdkarm64:linuxarm64 sdk32:linux32; do
     ln -sfn "$steam_root/${pair#*:}" "$HOME/.steam/${pair%%:*}"
 done
-printf 'publicbeta\n' >"$steam_root/package/beta"
+# The client channel is Steam's own business: in Deck mode (-steamdeck) Steam keeps package/beta at `steamdeck_stable`. This wrapper used to force `publicbeta` (a write here and
+# `-clientbeta publicbeta` below), and with the two disagreeing Steam re-downloaded and re-extracted its whole package at every COLD start ("installed version 0"; 7 min in QEMU,
+# ~10 min on the device). Left alone, a cold start logs "Download skipped ... installed version N" and goes straight on (QEMU session of the candidate, 2026-10-14).
 # Steam preloads its in-game overlay (steamrtarm64/gameoverlayrenderer.so) into every game process, and lists the SIGILL fallback BEFORE it. Libraries initialise
 # in reverse preload order, so the overlay's constructors (which contain LSE atomics this Cortex-A53 lacks) ran before the fallback had installed its handler: the
 # launch shell and then the game's container died with SIGILL, which Steam reported as exit -1 or a silent exit 0 (docs/WISPOS-NOTES.md, Steam-launched Worms).
@@ -43,6 +45,9 @@ export PROTON_USE_WINED3D=1 WINEDEBUG=-all
 # it cannot reuse the host's locale data: about 55 s of phase one and again in phase two on this CPU (measured: launch to game window 195 s with it, 129 s without;
 # docs/WISPOS-NOTES.md "Launch timeline"). Games already get LANG=C.UTF-8 LC_ALL=C from Steam; only a program asking for en_US.UTF-8 by name loses that locale.
 export PRESSURE_VESSEL_GENERATE_LOCALES=0
+# Games run inside Steam's pressure-vessel container, where the patched `proton` launcher cannot see the host's sway socket: it switches the panel to full resolution before the game starts
+# (the third piece of the Proton launcher patch; docs/WISPOS-NOTES.md "Display switch for games") by writing the one sway IPC command itself. Share exactly that one socket, nothing else.
+export PRESSURE_VESSEL_FILESYSTEMS_RW=/run/0-runtime-dir/sway-ipc.0.sock
 # Native Linux x86 games (Half-Life family, Counter-Strike, ...) are run by Valve's FEX tool (Steam app 3127680, fex-compat-tool), which needs an x86 guest root filesystem with a
 # graphics provider: STEAM_COMPAT_GRAPHICS_PROVIDER is the path of its graphics_provider.json (SteamOS ships the root at /usr/share/guestos/fex-mesa; this image does not, so the
 # FEX project's Ubuntu RootFS is unpacked under $base/guestos). Without the variable the tool exits silently and the game never opens a window. ThunksDB_GL:1 routes the guest's
@@ -68,6 +73,7 @@ if ! grep -q '^/dev/zram0[[:space:]]' /proc/swaps; then
       || say 'warning: zram swap setup failed'
 fi
 printf '180\n' >/proc/sys/vm/swappiness
+printf '0\n' >/proc/sys/vm/page-cluster            # zram has no seek cost: read back the one page that faulted, not eight (the kernel's default of 3 reads 8 per swap-in)
 ulimit -c 0
 
 # Steam must start on a fresh Xwayland. Reusing the previous Steam's server (it only exits by itself after ~10 s without clients) left Steam's UI
@@ -95,10 +101,16 @@ while :; do
     wisp-fex-official 2>&1 | tee -a "$log_dir/session.log"                                                 # the FEX project's own Windows modules (DEP-disabled mode), stock upstream binaries
     wisp-wow64-valve 2>&1 | tee -a "$log_dir/session.log"                                                   # asks Steam for Valve's Proton app once; copies its tested wow64.dll when installed
     wisp-proton-patch 2>&1 | tee -a "$log_dir/session.log"                                                   # no repeated install-script evaluation (about 100 s per launch)
+    # Our taskset shim answers Valve's `exec taskset 0x7c steamwebhelper` (two cores on this SoC) with all four cores and the Chromium switches, WITHOUT editing Valve's file: Steam checks that file by
+    # CRC and re-extracts its whole package to restore it (docs/WISPOS-NOTES.md, 2026-10-14). The helper inherits Steam's PATH.
+    export PATH="/usr/lib/wispos/bin:$PATH"
     cd "$steam_root" || exit 1
     # wisp-steam-launch starts the SteamOS manager on this session bus BEFORE Steam, which looks for it once at start-up (see that script)
+    # -steamos3 -steamdeck (operator decision 2026-10-14): without them Steam believes it is in plain Big Picture mode; with them it runs the SteamOS / Steam Deck gamepad UI and talks to the
+    # SteamOS manager that wisp-steam-launch starts on this session bus. Measured 2026-10-11 with the manager absent: Steam tried to set the GPU clock, a performance profile, VRS and Wi-Fi power
+    # management, and the gear icon carried a warning mark (docs/WISPOS-NOTES.md, "The cast icon").
     dbus-run-session -- /usr/bin/wisp-steam-launch /usr/bin/env "LD_PRELOAD=/usr/lib/wispos/libwispos-ldadd.so" \
-        "$steam_root/steamrtarm64/steam" -gamepadui -clientbeta publicbeta \
+        "$steam_root/steamrtarm64/steam" -gamepadui -steamos3 -steamdeck \
         -no-cef-sandbox -cef-ozone-platform=x11 >>"$log_dir/steam.log" 2>&1
     rc=$?
     say "Steam exited with status $rc"

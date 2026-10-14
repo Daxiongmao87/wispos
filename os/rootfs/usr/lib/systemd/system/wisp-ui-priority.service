@@ -1,0 +1,14 @@
+# Scheduling priority follows what is in front: the Steam UI at nice -10 when it is the thing in use, at 19 while a game is in front or starting, the game at -10 then and 0 otherwise; see
+# /usr/bin/wisp-ui-priority (operator decision 2026-10-14). Runs only with the Steam session (game mode). No sway, an unreadable tree or a lost event stream means everything at nice 0.
+[Unit]
+Description=WispOS UI and game scheduling priority follows the focus
+After=sway.service
+Wants=sway.service
+PartOf=wisp-steam.service
+
+[Service]
+Environment=XDG_RUNTIME_DIR=/var/run/0-runtime-dir
+Environment=SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
+ExecStart=/usr/bin/wisp-ui-priority
+Restart=always
+RestartSec=2

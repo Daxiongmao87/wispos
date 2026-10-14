@@ -1,0 +1,143 @@
+#!/usr/bin/python3
+"""wisp-ui-priority: scheduling priority follows what is in front, so the Steam UI is quick when it is the thing being used and a game is quick when it is.
+
+  Steam's UI in front (or alone)          UI web helpers: nice -10     game processes: nice 0
+  a game in front, or being started       UI web helpers: nice 19      game processes: nice -10
+
+Operator decision 2026-10-14 (the "soft freeze": nothing is ever frozen or stopped, only ordered; docs/WISPOS-NOTES.md). "The UI" is every thread of every `steamwebhelper` process (the
+Steam client itself stays at nice 0 because every game it starts would inherit its value); "the game" is every thread of every process below a `reaper` (Steam starts one per game). A game
+is "being started" from the moment its `reaper` exists until a window that is not Steam's has had focus: the start is the most memory- and CPU-hungry moment, and a UI at normal or raised
+priority through it thrashed the machine in the 2026-10-13 benchmark series. In front means: the focused window's class is not `steam` / `steamwebhelper` (the same rule as
+wisp-ui-reclaim's thaw and wisp-game-display). nice is per THREAD on Linux and a child inherits its parent's value, so every thread is set again every PERIOD seconds (new threads, new helper
+processes) and at once on a focus change; only changes are written. Negative values need root, which the service is.
+
+Doubt is neutral, never a boost: with no sway, an unreadable tree or a lost event stream every thread it manages is put at nice 0 (and the program exits non-zero for systemd to restart it
+when the stream ended). On SIGTERM everything it set goes back to 0. It asks sway for the tree only after a window event, never on a timer (sway keeps every reply it gives).
+Seams for the tests: WISP_SWAYMSG, WISP_PROC_ROOT, WISP_PRIO_RECORD (a file: nice values are then recorded there, one `tid nice` line per change, instead of being set),
+WISP_PRIO_PERIOD (3 s), WISP_UI_FRONT / WISP_UI_BACK / WISP_GAME_FRONT / WISP_GAME_BACK (-10 / 19 / -10 / 0)."""
+import json, os, select, signal, subprocess, sys, time
+
+SWAYMSG = os.environ.get('WISP_SWAYMSG', 'swaymsg')
+PROC = os.environ.get('WISP_PROC_ROOT', '/proc')
+RECORD = os.environ.get('WISP_PRIO_RECORD')
+PERIOD = float(os.environ.get('WISP_PRIO_PERIOD', '3'))
+UI_FRONT, UI_BACK = int(os.environ.get('WISP_UI_FRONT', '-10')), int(os.environ.get('WISP_UI_BACK', '19'))
+GAME_FRONT, GAME_BACK = int(os.environ.get('WISP_GAME_FRONT', '-10')), int(os.environ.get('WISP_GAME_BACK', '0'))
+STEAM_UI = ('steam', 'steamwebhelper')
+_recorded = {}                                                  # tid -> nice, only used with WISP_PRIO_RECORD
+
+
+def focused_class(node):
+    """The class (X11) or app id (Wayland) of the focused window in a sway tree, '' when no window has focus; None when the tree is not one."""
+    if not isinstance(node, dict): return None
+    if node.get('focused') and node.get('type') in ('con', 'floating_con') and not node.get('nodes') and not node.get('floating_nodes'):
+        return (node.get('window_properties') or {}).get('class') or node.get('app_id') or ''
+    for child in (node.get('nodes') or []) + (node.get('floating_nodes') or []):
+        found = focused_class(child)
+        if found: return found
+    return ''
+
+
+def processes():
+    """{pid: (comm, ppid)} from the proc tree."""
+    out = {}
+    try: names = os.listdir(PROC)
+    except OSError: return out
+    for pid in names:
+        if not pid.isdigit(): continue
+        try:
+            with open('%s/%s/stat' % (PROC, pid), errors='replace') as f: stat = f.read()
+            out[int(pid)] = (stat[stat.index('(') + 1:stat.rindex(')')], int(stat[stat.rindex(')') + 2:].split()[1]))
+        except (OSError, ValueError, IndexError): continue
+    return out
+
+
+def groups(procs):
+    """(ui pids, game pids, a reaper exists): the web helpers; everything below a reaper (not the reaper itself)."""
+    ui = [p for p, (comm, _) in procs.items() if comm == 'steamwebhelper']
+    reapers = {p for p, (comm, _) in procs.items() if comm == 'reaper'}
+    game, frontier = set(), set(reapers)
+    while frontier:
+        kids = {p for p, (_, ppid) in procs.items() if ppid in frontier and p not in game and p not in reapers}
+        game |= kids; frontier = kids
+    return ui, sorted(game), bool(reapers)
+
+
+def set_nice(tid, nice):
+    """Set one thread's nice (True when it was changed)."""
+    if RECORD:
+        if _recorded.get(tid, 0) == nice: return False
+        _recorded[tid] = nice
+        with open(RECORD, 'a') as f: f.write('%d %d\n' % (tid, nice))
+        return True
+    try:
+        if os.getpriority(os.PRIO_PROCESS, tid) == nice: return False
+        os.setpriority(os.PRIO_PROCESS, tid, nice); return True
+    except OSError: return False                                # the thread ended meanwhile
+
+
+def apply(pids, nice):
+    changed = 0
+    for pid in pids:
+        try: tids = os.listdir('%s/%d/task' % (PROC, pid))
+        except OSError: continue
+        for tid in tids:
+            if tid.isdigit() and set_nice(int(tid), nice): changed += 1
+    return changed
+
+
+class Front:
+    """Which side is in front: 'game', 'ui' or None (do not know: neutral)."""
+    def __init__(self): self.game_seen = False; self.focus = None             # focus: the last focused class read from sway (None: no reading)
+
+    def read(self):
+        try:
+            r = subprocess.run([SWAYMSG, '-t', 'get_tree', '-r'], capture_output=True, text=True, timeout=10)
+            cls = focused_class(json.loads(r.stdout)) if r.returncode == 0 else None
+        except (OSError, ValueError, subprocess.TimeoutExpired): cls = None
+        self.focus = cls
+        if cls and cls not in STEAM_UI: self.game_seen = True
+
+    def state(self, reaper_exists):
+        if not reaper_exists: self.game_seen = False
+        if self.focus is None: return None
+        if self.focus and self.focus not in STEAM_UI: return 'game'
+        return 'game' if (reaper_exists and not self.game_seen) else 'ui'     # a game being started counts as in front until a game window has had focus
+
+
+def sweep(front):
+    ui, game, reaper = groups(processes())
+    side = front.state(reaper)
+    if side == 'game': ui_nice, game_nice = UI_BACK, GAME_FRONT
+    elif side == 'ui': ui_nice, game_nice = UI_FRONT, GAME_BACK
+    else: ui_nice, game_nice = 0, 0
+    return apply(ui, ui_nice) + apply(game, game_nice), side
+
+
+def neutral():
+    ui, game, _ = groups(processes())
+    apply(ui, 0); apply(game, 0)
+
+
+def main():
+    signal.signal(signal.SIGTERM, lambda *_: (neutral(), sys.exit(0)))
+    front = Front(); front.read()
+    try: stream = subprocess.Popen([SWAYMSG, '-m', '-t', 'subscribe', '-r', '["window"]'], stdout=subprocess.PIPE, text=True)
+    except OSError as e:
+        print('wisp-ui-priority: cannot ask sway (%s); everything neutral' % e, file=sys.stderr, flush=True); neutral(); return 1
+    last = object()                                                  # nothing announced yet (None is a state: unknown)
+    while True:
+        changed, side = sweep(front)
+        if side != last: print('wisp-ui-priority: %s' % {'game': 'a game is in front or starting', 'ui': 'Steam is in front', None: 'unknown, neutral'}[side], flush=True); last = side
+        ready, _, _ = select.select([stream.stdout], [], [], PERIOD)
+        if not ready: continue
+        line = stream.stdout.readline()
+        if not line:
+            print('wisp-ui-priority: sway event stream ended', file=sys.stderr, flush=True); neutral(); return 1
+        try: ev = json.loads(line)
+        except ValueError: continue
+        if isinstance(ev, dict) and ev.get('change') in ('focus', 'new', 'close', 'move'): front.read()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

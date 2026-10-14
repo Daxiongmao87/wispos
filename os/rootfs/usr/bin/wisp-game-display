@@ -1,0 +1,103 @@
+#!/usr/bin/python3
+"""wisp-game-display: the panel runs at full scale while a game is in front (or being started) and at the image's default (half resolution) the rest of the time.
+
+Why: the default display is half resolution (usr/share/sway/config.kiosk: `output DSI-1 scale 2`, so Steam's UI is laid out on 360x240 and scaled up), which suits the UI but gives a game
+a 360x240 screen: a game that asks for 640x480 cannot create its window and gets a 360x228 one (found on the handheld 2026-10-12, Quake III Arena; the 2026-10-11 pass worked only because a
+dev script switched the scale by hand). Two pieces cooperate:
+  1. the patched `proton` launcher (the Proton patch tool's third piece) switches to full scale BEFORE the game can initialise graphics, which is the only moment that helps (a switch
+     made when the game's window takes focus is too late: the mode list was read already). It runs inside Steam's pressure-vessel container, so it writes the one IPC command to sway's
+     socket itself (the session shares that socket); it never puts the default back;
+  2. this program is the AUTHORITY that keeps the display consistent afterwards, whatever happens: a focused window that is not Steam's own means "a game" (native); so does a running
+     `proton waitforexitandrun` launcher (a game being started, while Steam's UI still has focus: without this rule this program would undo the launcher's early switch); Steam's UI
+     with no launcher, or no window at all, means `wisp-display default`. The launcher ending, normally or by Steam's "Stop game", a crash or a kill, is noticed within POLL seconds
+     and answered with one fresh look at the windows. While no launcher runs there is no polling at all.
+It follows sway's window events (the same rule as wisp-ui-reclaim's thaw: focus on a window of class `steam`), asks sway for the focused window after every event (so a missed or reordered
+event cannot leave a stale answer), and only calls wisp-display when the wanted state CHANGES.
+
+Exits non-zero when sway's event stream ends, so systemd restarts it; no sway, an unreadable tree or any doubt counts as "not a game": the shipped default display.
+Seams for the tests: WISP_SWAYMSG (swaymsg), WISP_DISPLAY_TOOL (/usr/bin/wisp-display), WISP_PROC_ROOT (/proc), WISP_GAME_DISPLAY_POLL (5 seconds)."""
+import json, os, select, subprocess, sys
+
+SWAYMSG = os.environ.get('WISP_SWAYMSG', 'swaymsg')
+DISPLAY_TOOL = os.environ.get('WISP_DISPLAY_TOOL', '/usr/bin/wisp-display')
+PROC_ROOT = os.environ.get('WISP_PROC_ROOT', '/proc')
+POLL = float(os.environ.get('WISP_GAME_DISPLAY_POLL', '5'))     # seconds between looks for the launcher's end, only while one runs
+STEAM_UI = ('steam', 'steamwebhelper')                        # Steam's own windows: the UI, its popups; everything else that has focus is a game (or a program the user started)
+
+
+def focused_class(node):
+    """The class (X11) or app id (Wayland) of the focused window in a sway tree, '' when no window has focus; None when the tree is not one."""
+    if not isinstance(node, dict): return None
+    if node.get('focused') and node.get('type') in ('con', 'floating_con') and not node.get('nodes') and not node.get('floating_nodes'):
+        return (node.get('window_properties') or {}).get('class') or node.get('app_id') or ''
+    for child in (node.get('nodes') or []) + (node.get('floating_nodes') or []):
+        found = focused_class(child)
+        if found: return found
+    return ''
+
+
+def launcher_running(proc_root=None):
+    """True while a `proton waitforexitandrun` launcher (Steam starting or running a Windows game) is alive: a command line holding that verb and an argument ending in /proton."""
+    proc_root = proc_root or PROC_ROOT
+    try: pids = [n for n in os.listdir(proc_root) if n.isdigit()]
+    except OSError: return False
+    for pid in pids:
+        try:
+            with open('%s/%s/cmdline' % (proc_root, pid), 'rb') as f: args = f.read().split(b'\0')
+        except OSError: continue
+        if b'waitforexitandrun' in args and any(a.endswith(b'/proton') for a in args): return True
+    return False
+
+
+def wanted(tree, launching=False):
+    """'native' when a game has focus or one is being started, else 'default'."""
+    if launching: return 'native'
+    cls = focused_class(tree)
+    return 'native' if cls and cls not in STEAM_UI else 'default'
+
+
+def read_tree():
+    try:
+        r = subprocess.run([SWAYMSG, '-t', 'get_tree', '-r'], capture_output=True, text=True, timeout=10)
+        return json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def main():
+    state = None
+    watch = False                                              # a launcher was alive at the last look: then its end must be noticed
+
+    def settle():
+        nonlocal state, watch
+        watch = launcher_running()
+        want = wanted(read_tree(), watch)
+        if want != state:
+            state = want
+            print('wisp-game-display: %s' % want, flush=True)
+            subprocess.run([DISPLAY_TOOL, want], check=False)
+
+    # subscribe FIRST, then read the tree: an event that arrives between the two is not lost
+    p = subprocess.Popen([SWAYMSG, '-m', '-t', 'subscribe', '-r', '["window"]'], stdout=subprocess.PIPE)
+    settle()
+    fd, buf = p.stdout.fileno(), b''
+    while True:
+        ready, _, _ = select.select([fd], [], [], POLL if watch else None)
+        if not ready:                                           # only while a launcher runs: has it ended (or been killed) without a window event?
+            if not launcher_running(): settle()
+            continue
+        chunk = os.read(fd, 65536)
+        if not chunk: break
+        *lines, buf = (buf + chunk).split(b'\n')
+        for line in lines:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(ev, dict) and ev.get('change') in ('focus', 'new', 'close', 'move'): settle()
+    print('wisp-game-display: sway\'s event stream ended', file=sys.stderr)
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

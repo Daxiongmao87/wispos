@@ -1,0 +1,156 @@
+#!/usr/bin/python3
+"""wisp-home: the pad's Steam button (BTN_MODE) takes the player from a running game to Steam's UI and back.
+
+Why: on SteamOS the Steam button opens Steam's overlay over the game. Here the in-game overlay does not exist (the overlay library is the SIGILL-fallback stand-in, docs/WISPOS-NOTES.md "The
+thaw rule"), Steam's own `steam://open/bigpicture` does not bring its window forward, and the pad does nothing for the game's own dialogs: a player had no way back to Steam from a running
+game (found on the handheld 2026-10-13: the real Steam button did nothing). Release journey 3 of docs/WISPOS-JOURNEYS.md ("leaving returns to the Steam UI") needs one.
+What it does: a short TAP of the Steam button (released with no other button pressed in between, so Steam+X and the like are left alone) toggles:
+  - a game window has focus: every game window is moved to sway's scratchpad (hidden, still running) and Steam's window is focused (wisp-ui-reclaim thaws the UI on that focus event;
+    Steam's UI takes about 30 s to be usable while the game's pages are resident; the game keeps its memory);
+    Steam is also asked to open the running game's library page (steam://nav/games/details/APPID, where "Stop" and "Resume" are) when the game's window class says which game it is (steam_app_APPID);
+  - Steam's window has focus (or nothing does) and a game window is in the scratchpad: the game is shown again and made fullscreen (the kiosk rule), which freezes the UI again.
+  - otherwise nothing: with no game running Steam's own handling of the button is left alone, and if Steam has no window (the game must not be hidden into a screen with nothing on it) nothing is hidden.
+It never writes to the pad or to the game: it only READS the pad's events (no grab) and sends window commands to sway. The pad is any evdev device that has both BTN_SOUTH and BTN_MODE; new ones
+(a pad plugged in later, the dev virtual pad) are found every few seconds.
+Seams for the tests: WISP_SWAYMSG (swaymsg), WISP_STEAM_OPEN (/usr/bin/wisp-steam-open), WISP_HOME_DEVICES (colon-separated paths used INSTEAD of discovery), WISP_INPUT_DIR (/dev/input), WISP_HOME_RESCAN (5 s), WISP_HOME_DEBOUNCE (1 s)."""
+import fcntl, json, os, re, select, struct, subprocess, sys, time
+
+SWAYMSG = os.environ.get('WISP_SWAYMSG', 'swaymsg')
+INPUT_DIR = os.environ.get('WISP_INPUT_DIR', '/dev/input')
+FORCED = [p for p in os.environ.get('WISP_HOME_DEVICES', '').split(':') if p]
+RESCAN = float(os.environ.get('WISP_HOME_RESCAN', '5'))
+DEBOUNCE = float(os.environ.get('WISP_HOME_DEBOUNCE', '1'))
+STEAM_UI = ('steam', 'steamwebhelper')                     # Steam's own windows; every other window with a class is a game (or a program the user started)
+SCRATCH = '__i3_scratch'
+OPENER = os.environ.get('WISP_STEAM_OPEN', '/usr/bin/wisp-steam-open')       # hands a steam:// URL to the running Steam client
+EV_KEY, BTN_SOUTH, BTN_MODE = 1, 304, 316
+EVENT = struct.Struct('llHHi')                              # struct input_event on 64-bit Linux: seconds, microseconds, type, code, value
+
+
+def eviocgbit(ev, length):
+    """The ioctl number EVIOCGBIT(ev, length): read, type 'E', number 0x20 + ev."""
+    return (2 << 30) | (length << 16) | (ord('E') << 8) | (0x20 + ev)
+
+
+def is_pad(path):
+    """True when the evdev device has BTN_SOUTH and BTN_MODE (a gamepad with a Steam/guide button)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        buf = bytearray(96)
+        fcntl.ioctl(fd, eviocgbit(EV_KEY, len(buf)), buf)
+        has = lambda code: bool(buf[code // 8] & (1 << (code % 8)))
+        return has(BTN_SOUTH) and has(BTN_MODE)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def discover():
+    if FORCED: return list(FORCED)
+    try: names = sorted(n for n in os.listdir(INPUT_DIR) if n.startswith('event'))
+    except OSError: return []
+    return [os.path.join(INPUT_DIR, n) for n in names if is_pad(os.path.join(INPUT_DIR, n))]
+
+
+def windows(node, workspace='', out=None):
+    """[(con id, class or app id, focused, workspace name)] for every window leaf of a sway tree."""
+    out = [] if out is None else out
+    if not isinstance(node, dict): return out
+    if node.get('type') == 'workspace': workspace = node.get('name') or ''
+    kids = (node.get('nodes') or []) + (node.get('floating_nodes') or [])
+    if node.get('type') in ('con', 'floating_con') and not kids:
+        cls = (node.get('window_properties') or {}).get('class') or node.get('app_id') or ''
+        if cls: out.append((node.get('id'), cls, bool(node.get('focused')), workspace))
+    for k in kids: windows(k, workspace, out)
+    return out
+
+
+def plan(tree):
+    """The sway commands for one tap of the Steam button on this tree (a list, possibly empty)."""
+    ws = windows(tree)
+    steam = [w for w in ws if w[1] == 'steam']
+    games = [w for w in ws if w[1] not in STEAM_UI]
+    focused = [w for w in ws if w[2]]
+    if focused and focused[0][1] not in STEAM_UI:                      # a game is in front: hide it and show Steam, but only if Steam has a window to show
+        if not steam: return []
+        return ['[con_id=%s] move scratchpad' % g[0] for g in games if g[3] != SCRATCH] + ['[con_id=%s] focus' % steam[0][0]]
+    hidden = [g for g in games if g[3] == SCRATCH]
+    if hidden: return ['[con_id=%s] scratchpad show' % hidden[0][0], '[con_id=%s] fullscreen enable' % hidden[0][0]]
+    return []
+
+
+def game_page(tree):
+    """steam://nav/games/details/APPID for the game that has focus (Steam gives a Windows game the window class steam_app_APPID), or None when the class does not say which game it is."""
+    for _, cls, focused, _ in windows(tree):
+        if focused:
+            m = re.fullmatch(r'steam_app_([0-9]+)', cls)
+            return 'steam://nav/games/details/%s' % m.group(1) if m else None
+    return None
+
+
+def sway(*args):
+    try: return subprocess.run([SWAYMSG] + list(args), capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired): return None
+
+
+def tap():
+    r = sway('-t', 'get_tree', '-r')
+    if r is None or r.returncode != 0: return
+    try: tree = json.loads(r.stdout)
+    except ValueError: return
+    try: commands = plan(tree)
+    except Exception as e:                                          # a tree this program does not understand must not stop the daemon
+        print('wisp-home: cannot plan from this tree: %r' % (e,), file=sys.stderr, flush=True); return
+    for command in commands:
+        print('wisp-home: %s' % command, flush=True)
+        sway(command)
+    url = game_page(tree) if commands else None                    # the focused window is a game only when this tap takes the player from it to Steam (plan() declines when Steam has no window)
+    if url:
+        print('wisp-home: %s' % url, flush=True)
+        try: subprocess.Popen([OPENER, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError: pass
+
+
+def main():
+    fds, bufs = {}, {}                                              # path -> fd; fd -> partial event bytes
+    pressed = {}                                                    # fd -> (when Mode went down, another button was pressed meanwhile)
+    last_tap, next_scan = 0.0, 0.0
+    while True:
+        now = time.time()
+        if now >= next_scan:
+            next_scan = now + RESCAN
+            found = discover()
+            for path in found:
+                if path not in fds:
+                    try: fds[path] = os.open(path, os.O_RDONLY | os.O_NONBLOCK); bufs[fds[path]] = b''
+                    except OSError: pass
+            for path in [p for p in fds if p not in found and not FORCED]:
+                os.close(fds.pop(path))
+        if not fds:
+            time.sleep(min(RESCAN, 1.0)); continue
+        ready, _, _ = select.select(list(fds.values()), [], [], max(0.1, next_scan - time.time()))
+        for fd in ready:
+            try: data = os.read(fd, 4096)
+            except OSError: data = b''
+            if not data:                                            # the device went away (or a FIFO closed): forget it, the next scan finds it again
+                for p in [p for p, v in fds.items() if v == fd]: os.close(fds.pop(p))
+                bufs.pop(fd, None); pressed.pop(fd, None); continue
+            buf = bufs.get(fd, b'') + data
+            while len(buf) >= EVENT.size:
+                _, _, etype, code, value = EVENT.unpack(buf[:EVENT.size]); buf = buf[EVENT.size:]
+                if etype != EV_KEY or value == 2: continue         # only presses and releases, never the autorepeat
+                if code == BTN_MODE and value == 1: pressed[fd] = False
+                elif code == BTN_MODE and value == 0:
+                    if fd in pressed and not pressed.pop(fd) and time.time() - last_tap >= DEBOUNCE:
+                        last_tap = time.time(); tap()
+                elif fd in pressed: pressed[fd] = True              # another button while Steam is held: a chord, not a tap
+            bufs[fd] = buf
+
+
+if __name__ == '__main__':
+    try: sys.exit(main())
+    except KeyboardInterrupt: sys.exit(0)

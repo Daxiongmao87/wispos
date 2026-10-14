@@ -5,6 +5,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 INSTALLER = HERE / 'rootfs/usr/lib/wispos/steam-install'
 EXTRACTOR = HERE.parent / 'steam/native-client.py'
+ECHO = b'echo "setting LIBGL_KOPPER_DISABLE=true for steamwebhelper to get store working properly"'
 OLD = b'exec taskset 0x7c $(pwd)/steamwebhelper "$@" &> ~/.steam/steam/logs/steamwebhelper.log'
 
 
@@ -57,7 +58,7 @@ class Fixture(unittest.TestCase):
         self.web = self.tmp / 'web'; self.web.mkdir()
         self.lib = self.tmp / 'lib'; self.lib.mkdir()                       # what /usr/lib/wispos holds in the image
         shutil.copy(INSTALLER, self.lib / 'steam-install'); shutil.copy(EXTRACTOR, self.lib / 'native_client.py')
-        wrapper = b'#!/bin/bash\n' + OLD + b'\n'
+        wrapper = b'#!/bin/bash\n' + ECHO + b'\n' + OLD + b'\n'
         pad = os.urandom(600_000)                                            # big enough that a cut lands mid-file
         self.parts = {'bins': {'steamrtarm64/steam': aarch64_elf(), 'steamrtarm64/steamwebhelper': aarch64_elf(), 'steamrtarm64/steamclient.so': aarch64_elf(),
                                'steamrtarm64/steamwebhelper.sh': wrapper, 'steamrtarm64/blob.bin': pad},
@@ -125,7 +126,7 @@ class InstallTests(Fixture):
         steam = self.runtime / 'steam'
         self.assertTrue((steam / 'steamrtarm64/steam').exists() and os.access(steam / 'steamrtarm64/steam', os.X_OK))
         wrapper = (steam / 'steamrtarm64/steamwebhelper.sh').read_bytes()
-        self.assertNotIn(b'taskset', wrapper); self.assertIn(b'exec "$(pwd)/steamwebhelper"', wrapper)
+        self.assertEqual(wrapper, b'#!/bin/bash\n' + ECHO + b'\n' + OLD + b'\n', 'Valve\'s wrapper is left byte for byte as shipped: Steam checks it by CRC and re-extracts its package to restore a changed one (docs/WISPOS-NOTES.md 2026-10-14); the taskset shim does the work')
         self.assertEqual(json.loads((self.runtime / 'meta/native-client.lock.json').read_text())['version'], '42')
         self.assertFalse(self.cache.exists(), 'the cache is removed after a successful install')
         self.assertFalse((self.runtime / 'steam.installing').exists())
@@ -185,13 +186,6 @@ class InstallTests(Fixture):
         code, lines = self.run_installer()
         self.assertEqual(code, 1); self.assertFalse((self.runtime / 'READY').exists())
 
-    def test_the_wrapper_is_patched_exactly_once_or_the_install_fails(self):
-        two = dict(self.parts['bins']); two['steamrtarm64/steamwebhelper.sh'] = (OLD + b'\n') * 2
-        make_zip(self.web / 'bins.zip', two); data = (self.web / 'bins.zip').read_bytes()
-        self.components[0].update(sha256=hashlib.sha256(data).hexdigest(), size=len(data)); self.write_lock()
-        code, lines = self.run_installer()
-        self.assertEqual(code, 1); self.assertFalse((self.runtime / 'READY').exists())
-
     def test_the_installer_has_no_unbounded_timeouts_and_uses_the_pinned_lock_only(self):
         text = INSTALLER.read_text()
         self.assertIn('timeout=60', text); self.assertNotIn('shell=True', text)
@@ -221,6 +215,18 @@ class ToolInstallTests(Fixture):
         progress = [l.split() for l in lines if l.startswith('progress')]
         self.assertEqual(progress[-1][1:3], [str(total), str(total)]); self.assertEqual(progress[-1][3], self.TOOL)
         self.assertTrue(all(int(a[1]) <= int(b[1]) for a, b in zip(progress, progress[1:])), 'progress never goes backwards')
+
+    def test_unpacking_the_tool_reports_its_own_progress_so_the_screen_does_not_sit_at_100_percent(self):
+        self.make_tool(); lock = json.loads(self.tool_lock.read_text()); lock['extracted_mib'] = 1; self.tool_lock.write_text(json.dumps(lock))
+        code, lines = self.run_installer(); self.assertEqual(code, 0, lines)
+        after = lines[lines.index('phase extract') + 1:lines.index('phase finish')]
+        unpack = [l.split() for l in after if l.startswith('progress')]
+        self.assertTrue(unpack, 'no progress while unpacking'); self.assertTrue(all(l[2] == str(1 << 20) and l[3] == self.TOOL for l in unpack))
+        self.assertTrue(all(0 <= int(l[1]) <= (1 << 20) for l in unpack)); self.assertTrue(all(int(a[1]) <= int(b[1]) for a, b in zip(unpack, unpack[1:])))
+
+    def test_a_lock_without_the_unpacked_size_reports_nothing_while_unpacking(self):
+        self.make_tool(); code, lines = self.run_installer(); self.assertEqual(code, 0, lines)
+        self.assertEqual([l for l in lines[lines.index('phase extract') + 1:lines.index('phase finish')] if l.startswith('progress')], [])
 
     def test_a_device_that_has_steam_but_not_the_tool_downloads_only_the_tool(self):
         self.assertEqual(self.run_installer()[0], 0)                      # an install from before the tool existed

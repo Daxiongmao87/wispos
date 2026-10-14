@@ -1,0 +1,46 @@
+#!/usr/bin/python3
+"""wisp-steam-open URL: hand a steam:// URL to the RUNNING Steam client (steam://nav/games/details/APPID opens that game's library page, steam://open/main the main page, ...).
+
+How Steam takes a URL: the client binary started again with `-ifrunning URL` forwards the URL to the running instance and exits; for that it needs the running client's own environment (its D-Bus
+session, display, locale), which is read from /proc/<pid>/environ of the process named `steam`. It starts nothing when Steam is not running (exit status 1) and refuses anything that is not a
+steam:// URL (exit status 2), so it can not be used to run arbitrary arguments. It does not wait for the page to open. Used by wisp-home; the same recipe as the dev helper os/dev/diag/steam-open.sh.
+Seams for the tests: WISP_STEAM_ROOT (/storage/wispos/runtime/steam), WISP_PROC_ROOT (/proc)."""
+import os, re, subprocess, sys
+
+ROOT = os.environ.get('WISP_STEAM_ROOT', '/storage/wispos/runtime/steam')
+PROC = os.environ.get('WISP_PROC_ROOT', '/proc')
+
+
+def steam_pid():
+    """The pid of the running Steam client (the process whose name is `steam`), or None."""
+    try: names = sorted((n for n in os.listdir(PROC) if n.isdigit()), key=int)
+    except OSError: return None
+    for pid in names:
+        try:
+            with open('%s/%s/comm' % (PROC, pid)) as f:
+                if f.read().strip() == 'steam': return pid
+        except OSError: continue
+    return None
+
+
+def main(argv):
+    if len(argv) != 1 or not re.fullmatch(r'steam://[A-Za-z0-9_./:?=&%#@+-]+', argv[0]):
+        print('usage: wisp-steam-open steam://...', file=sys.stderr); return 2
+    pid = steam_pid()
+    if pid is None:
+        print('wisp-steam-open: Steam is not running', file=sys.stderr); return 1
+    try:
+        with open('%s/%s/environ' % (PROC, pid), 'rb') as f: raw = f.read().decode(errors='replace')
+    except OSError as e:
+        print('wisp-steam-open: cannot read the client environment: %s' % e, file=sys.stderr); return 1
+    env = dict(kv.split('=', 1) for kv in raw.split('\0') if '=' in kv)
+    try:
+        subprocess.Popen([os.path.join(ROOT, 'steamrtarm64/steam'), '-ifrunning', argv[0]], cwd=ROOT, env=env,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        print('wisp-steam-open: cannot start the client: %s' % e, file=sys.stderr); return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

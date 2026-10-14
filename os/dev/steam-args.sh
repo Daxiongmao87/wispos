@@ -37,7 +37,7 @@ case $CMD in
         mounted && umount $SCRIPT
         cp $SCRIPT $D/wisp-steam-session.orig
         # the steam exec line: add the extra switches right after -gamepadui
-        sed "s|-gamepadui -clientbeta publicbeta|-gamepadui $ARGS -clientbeta publicbeta|" $D/wisp-steam-session.orig > $D/wisp-steam-session
+        sed "s|steamrtarm64/steam\" -gamepadui |steamrtarm64/steam\" -gamepadui $ARGS |" $D/wisp-steam-session.orig > $D/wisp-steam-session
         chmod 755 $D/wisp-steam-session
         if grep -q -- "-gamepadui $ARGS" $D/wisp-steam-session && mount --bind $D/wisp-steam-session $SCRIPT; then start_steam; else echo "could not patch or mount the session script"; start_steam; exit 1; fi;;
     reset)

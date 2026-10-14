@@ -16,6 +16,7 @@ import json, os, subprocess, sys, time
 
 STALL_AFTER = 420          # seconds the session must have been up before a missing window counts (a normal start needs 4-5 minutes)
 CONFIRM = 4                # consecutive checks that must all see no window (CHECK_EVERY apart)
+STOPPED_CONFIRM = 2        # consecutive checks that must all find the client process stopped (state T), CHECK_EVERY apart: about 30 s; Steam never stops itself otherwise
 CHECK_EVERY = 15
 HEALTHY_EVERY = 900        # seconds between questions to sway once a Steam window has been seen (the failure being watched happens at start-up)
 MAX_RESTARTS, WINDOW = 3, 1800
@@ -40,15 +41,31 @@ def need_query(unit_active, uptime, helpers, since_seen, misses):
     return misses > 0 or since_seen is None or since_seen >= HEALTHY_EVERY
 
 
-def step(state, unit_active, uptime, helpers, ask_sway, restarts_in_window, now):
-    """One check round: (action, new state). state = {'misses': consecutive misses, 'seen_at': when a window was last seen, or None}; ask_sway() -> bool is called only if needed."""
+def decide_stopped(unit_active, stopped, checks, restarts_in_window):
+    """The second failure: Steam's own crash handler leaves the client process STOPPED (state T) after one of its watchdog asserts and nothing ever continues it (found on the
+    handheld 2026-10-13: stopped 14 minutes, its web helper a zombie, black screen; docs/WISPOS-NOTES.md). The window rule above cannot see it (it needs 3 live helpers and a
+    running client), so this one stands alone: it needs no uptime and no helpers. ('restart-stopped', 0) once the client was seen stopped STOPPED_CONFIRM checks in a row and
+    the restart budget allows it, else (None, new consecutive count)."""
+    if not unit_active or not stopped: return None, 0
+    checks += 1
+    if checks >= STOPPED_CONFIRM and restarts_in_window < MAX_RESTARTS: return 'restart-stopped', 0
+    return None, checks
+
+
+def step(state, unit_active, uptime, helpers, ask_sway, restarts_in_window, now, stopped=False, poke=False):
+    """One check round: (action, new state). state = {'misses': consecutive misses, 'seen_at': when a window was last seen, or None, 'stopped': consecutive checks that found the
+    client stopped (absent = 0)}; ask_sway() -> bool is called only if needed; stopped: whether the client process is in state T right now; poke: a Steam crash dump
+    appeared since the last round, so the window is checked now (a web helper that crashes can take Steam's window with it: found 2026-10-14, the UI was gone and nothing brought it back
+    for up to a healthy interval)."""
+    action, n_stopped = decide_stopped(unit_active, stopped, state.get('stopped', 0), restarts_in_window)
+    if action: return action, {'misses': 0, 'seen_at': None, 'stopped': 0}
     seen_at = state['seen_at'] if uptime >= STALL_AFTER else None           # a freshly started session has not been seen yet
     has_window = True                                                        # not asked: nothing to decide this round
-    if need_query(unit_active, uptime, helpers, None if seen_at is None else now - seen_at, state['misses']):
+    if need_query(unit_active, uptime, helpers, None if seen_at is None else now - seen_at, state['misses']) or (poke and unit_active and helpers >= 3 and uptime >= STALL_AFTER):
         has_window = ask_sway()
         if has_window: seen_at = now
     action, misses = decide(unit_active, uptime, helpers, has_window, state['misses'], restarts_in_window)
-    return action, {'misses': misses, 'seen_at': seen_at}
+    return action, {'misses': misses, 'seen_at': seen_at, 'stopped': n_stopped}
 
 
 def run(*args):
@@ -78,6 +95,31 @@ def unit_uptime():
 def helpers():
     r = run('pidof', 'steamwebhelper')
     return len(r.stdout.split())
+
+
+def client_stopped(proc_root, pids):
+    """True when any of the given processes (the Steam client) is in state T (stopped by a signal) according to proc_root/<pid>/stat. 't' (a debugger's tracing stop) is not this
+    failure and does not count; a process that is gone does not count either."""
+    for pid in pids:
+        try:
+            with open(os.path.join(proc_root, str(pid), 'stat')) as f: stat = f.read()
+            if stat[stat.rindex(')') + 2:].split()[0] == 'T': return True
+        except (OSError, ValueError, IndexError): continue
+    return False
+
+
+def newest_crash(directory='/tmp/dumps'):
+    """Name of the newest Steam CRASH dump (crash_*.dmp; the assert_* ones are the main-loop stall warnings and do not take a window away), or None."""
+    try: names = sorted(n for n in os.listdir(directory) if n.startswith('crash_') and n.endswith('.dmp'))
+    except OSError: return None
+    return names[-1] if names else None
+
+
+def recent_dumps(directory='/tmp/dumps', limit=3):
+    """The newest Steam assert dumps (file names carry the time), so a restart leaves which asserts came before it."""
+    try: names = sorted(n for n in os.listdir(directory) if n.startswith('assert_') and n.endswith('.dmp'))
+    except OSError: return []
+    return names[-limit:]
 
 
 def thread_table(proc_root, pids, limit=4):
@@ -115,7 +157,7 @@ def evidence(proc_root='/proc'):
     """What to write to the log before the session is restarted, so every field stall leaves a diagnosis behind (2026-10-10: web helpers sat in futex waits on a
     locked Mesa mutex in a frozen game; the same may hold for a black UI)."""
     pids = run('pidof', 'steamwebhelper').stdout.split()
-    return ['GPU page faults this boot: %d' % gpu_faults()] + thread_table(proc_root, pids)
+    return ['GPU page faults this boot: %d' % gpu_faults(), 'newest assert dumps: %s' % (', '.join(recent_dumps()) or 'none')] + thread_table(proc_root, pids)
 
 
 def log(message):
@@ -126,17 +168,23 @@ def log(message):
 
 
 def main():
-    state, restarts = {'misses': 0, 'seen_at': None}, []
+    state, restarts, seen_crash = {'misses': 0, 'seen_at': None}, [], newest_crash()
     while True:
         time.sleep(CHECK_EVERY)
         if os.path.exists(OFF_FILE): state = {'misses': 0, 'seen_at': None}; continue
         try:
             active, up = unit_uptime()
             now = time.time(); restarts = [t for t in restarts if now - t < WINDOW]
-            action, state = step(state, active, up, helpers() if active else 0, has_steam_window, len(restarts), now)
-            if action == 'restart':
+            stopped = active and client_stopped('/proc', run('pidof', 'steam').stdout.split())
+            crash = newest_crash(); poke = crash != seen_crash; seen_crash = crash
+            action, state = step(state, active, up, helpers() if active else 0, has_steam_window, len(restarts), now, stopped, poke)
+            if action == 'restart-stopped':
+                log('wisp-steam-watch: the Steam client has been stopped (state T) for %d checks, as its crash handler leaves it; restarting wisp-steam (%d of %d in %d s)'
+                    % (STOPPED_CONFIRM, len(restarts) + 1, MAX_RESTARTS, WINDOW))
+            elif action == 'restart':
                 log('wisp-steam-watch: Steam up %d s with web helpers but no Steam window in sway for %d checks; restarting wisp-steam (%d of %d in %d s)'
                     % (up, CONFIRM, len(restarts) + 1, MAX_RESTARTS, WINDOW))
+            if action:
                 try:
                     for line in evidence(): log('wisp-steam-watch:   evidence: ' + line)
                 except (subprocess.SubprocessError, OSError, ValueError) as e:

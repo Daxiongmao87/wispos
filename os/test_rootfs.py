@@ -66,6 +66,22 @@ _sys.path.insert(0, str(HERE))
 import accounts
 
 
+class BluetoothActivationTests(unittest.TestCase):
+    def test_the_bluez_name_is_started_on_demand_so_the_docks_bluetoothctl_works_without_an_always_on_daemon(self):
+        # found on the handheld 2026-10-12: nothing started bluetoothd, so `bluetoothctl show` (the quick-settings toggle) returned nothing
+        f = HERE / 'rootfs/usr/share/dbus-1/system-services/org.bluez.service'; self.assertTrue(f.is_file())
+        fields = dict(l.split('=', 1) for l in f.read_text().splitlines() if '=' in l)
+        self.assertEqual((fields['Name'], fields['SystemdService']), ('org.bluez', 'bluetooth.service'))
+        self.assertFalse((HERE / 'rootfs/usr/lib/systemd/system/wispos.target.wants/bluetooth.service').exists(), 'it must not be always on: it costs RAM')
+
+
+class MemoryPolicyTests(unittest.TestCase):
+    def test_the_session_sets_the_zram_friendly_vm_policy(self):
+        text = (HERE / 'rootfs/usr/bin/wisp-steam-session').read_text()
+        self.assertIn("printf '180\\n' >/proc/sys/vm/swappiness", text)
+        self.assertIn("printf '0\\n' >/proc/sys/vm/page-cluster", text)                  # zram: one page per swap-in, not eight (measured need, docs/WISPOS-NOTES.md memory policy)
+
+
 class AccountTests(unittest.TestCase):
     PASSWD = "root:x:0:0:Root User:/storage:/bin/sh\ndbus:x:81:81:System message bus:/:/bin/sh\nnobody:x:65534:65534:nobody:/:/bin/false\n"
     GROUP = "root:x:0:\nwheel:x:10:\nvideo:x:39:\naudio:x:63:\ninput:x:104:\nrender:x:105:\nusers:x:100:\nnetdev:x:497:\nsystemd-journal:x:190:\n"
@@ -391,7 +407,7 @@ class StageRootfsTests(unittest.TestCase):
         env = {**os.environ, 'PATH': f'{d}:{os.environ["PATH"]}', 'SWAYSOCK': str(d / 'sock'), 'WISP_KIOSK_CONFIG': str(HERE / 'rootfs/usr/share/sway/config.kiosk')}
         helper = str(HERE / 'rootfs/usr/bin/wisp-display')
         for arg in ('native', 'default'): subprocess.run(['sh', helper, arg], env=env, check=True)
-        self.assertEqual((d / 'calls').read_text().splitlines(), ['output DSI-1 scale 1', 'output DSI-1 scale 2'])
+        self.assertEqual((d / 'calls').read_text().splitlines(), ['output DSI-1 scale 1', 'output DSI-1 scale 1'])
         self.assertEqual(subprocess.run(['sh', helper, 'bogus'], env=env, capture_output=True).returncode, 2)
         sk.close()
 
@@ -753,10 +769,26 @@ class StageRootfsTests(unittest.TestCase):
         self.assertEqual(os.readlink(sysd / 'wispos.target.wants/wisp-wow64-valve.path'), '../wisp-wow64-valve.path')
 
 
-    def test_the_default_display_is_half_resolution_with_linear_scaling(self):
-        # Operator decision 2026-10-09: half resolution (360x240 scaled 2x to the 720x480 panel) is the default; native stays selectable.
+    def test_steam_starts_in_the_steamos_gamepad_ui_mode(self):
+        # Operator decision 2026-10-14: -steamos3 AND -steamdeck, otherwise Steam believes it is in plain Big Picture mode.
+        session = (HERE / 'rootfs/usr/bin/wisp-steam-session').read_text()
+        line = [l for l in session.splitlines() if 'steamrtarm64/steam" -gamepadui' in l]
+        self.assertEqual(len(line), 1); self.assertIn('-gamepadui -steamos3 -steamdeck', line[0])
+
+    def test_the_client_channel_is_left_to_steams_deck_mode(self):
+        # Found 2026-10-14 in the QEMU session of the candidate: in Deck mode Steam wants the `steamdeck_stable` client channel and rewrites package/beta to it. The wrapper forced
+        # `publicbeta` (a file write at every start, and `-clientbeta publicbeta`), so on every COLD start Steam looked its installed version up under one channel's manifest name and
+        # downloaded under the other's ("installed version 0") and re-downloaded and re-extracted its whole package (7 min in QEMU, ~10 min on the device) at every power-on.
+        # Same VM, same image: forced channel = an extraction at every cold start; no override = "Download skipped ... installed version 1791918634", no extraction.
+        session = (HERE / 'rootfs/usr/bin/wisp-steam-session').read_text()
+        code = [l for l in session.splitlines() if not l.lstrip().startswith('#')]
+        self.assertEqual([l for l in code if 'package/beta' in l], [], 'the wrapper must not write Steam\'s beta (channel) file')
+        self.assertEqual([l for l in code if '-clientbeta' in l], [], 'the wrapper must not override the channel for the session')
+
+    def test_the_default_display_is_the_panels_full_resolution(self):
+        # Operator decision 2026-10-14 (release): no half-resolution mode; the panel runs at its own 720x480 (scale 1). Half resolution had been the default since 2026-10-09.
         kiosk = (HERE / 'rootfs/usr/share/sway/config.kiosk').read_text().splitlines()
-        self.assertEqual([l for l in kiosk if l.startswith('output DSI-1 scale ')], ['output DSI-1 scale 2'])
+        self.assertEqual([l for l in kiosk if l.startswith('output DSI-1 scale ')], ['output DSI-1 scale 1'])
         self.assertEqual([l for l in kiosk if l.startswith('output DSI-1 scale_filter')], ['output DSI-1 scale_filter linear'])
         # ROCKNIX's 111-sway-init appends `output DSI-1 ...` lines after copying this file; none of those may set a scale (the base config is the only place)
         self.assertEqual(len([l for l in kiosk if 'scale' in l and l.startswith('output')]), 2)
@@ -919,6 +951,18 @@ class CheckRootfsTests(unittest.TestCase):
         usermade = own.replace('proton-experimental', 'proton-stable')                  # the user chose proton-stable themselves: no priority 75 -> never touched
         self.assertEqual(m.seed(usermade, custom), (usermade, 'present'))
         self.assertEqual(m.seed(own, custom), (own, 'present'))                           # any other choice stays too
+        # 2026-10-14: in SteamOS mode (-steamos3) Steam records a per-game mapping at priority 85 to Valve's proton-stable, which beats a default of priority 75: every game then ran on Valve's stock
+        # Proton, which spins in wineboot on this CPU. Our default must outrank 85 and stay below 250 (a person's own explicit choice), and earlier priority-75 seeds are upgraded in place.
+        self.assertIn('"priority"\t\t"200"', text); self.assertGreater(int(m.SEED_PRIORITY), 85); self.assertLess(int(m.SEED_PRIORITY), 250)
+        for legacy_name in ('proton-stable', custom):
+            legacy = m.seed('', legacy_name)[0].replace('"priority"\t\t"200"', '"priority"\t\t"75"')
+            fixed, status = m.seed(legacy, custom)
+            self.assertEqual(status, 'upgraded', legacy_name); self.assertIn('"name"\t\t"%s"' % custom, fixed); self.assertIn('"priority"\t\t"200"', fixed); self.assertNotIn('"75"', fixed)
+            self.assertEqual(m.seed(fixed, custom), (fixed, 'present'))                    # idempotent
+        explicit = m.seed('', custom)[0].replace('"priority"\t\t"200"', '"priority"\t\t"250"')
+        self.assertEqual(m.seed(explicit, custom), (explicit, 'present'))                  # the user's own explicit choice of the same tool is never touched
+        other = m.seed('', 'proton-experimental')[0]
+        self.assertEqual(m.seed(other, custom), (other, 'present'))                        # another tool at our priority is not ours
         root = Path(tempfile.mkdtemp(prefix='wispos-steamroot-', dir=os.environ.get('TMPDIR')))
         self.assertEqual(m.wanted_tool(str(root)), 'proton-stable')                      # not installed yet
         (root / 'compatibilitytools.d' / custom).mkdir(parents=True); (root / 'compatibilitytools.d' / custom / 'compatibilitytool.vdf').write_text('x')
@@ -1030,6 +1074,100 @@ class CheckRootfsTests(unittest.TestCase):
         session = (HERE / 'rootfs/usr/bin/wisp-steam-session').read_text()
         self.assertIn('wisp-proton-patch', session); self.assertLess(session.index('wisp-proton-patch'), session.index('steamrtarm64/steam" -gamepadui'))
 
+    def test_the_launcher_puts_the_panel_at_full_resolution_before_the_game_starts_through_sways_socket(self):
+        # 2026-10-12, handheld: the default display is half resolution (output scale 2), a game started at that scale read a 360x240 mode list and got a 360x228 window; every earlier
+        # working run had a script switch the scale BEFORE the game. 2026-10-13: the first version called /usr/bin/wisp-display from the patched `proton` launcher, which runs INSIDE
+        # Steam's pressure-vessel container where neither that tool nor swaymsg exists: it never ran, silently. The launcher now sends the command to sway's IPC socket itself, at the
+        # start of `waitforexitandrun` (the game), never for `run` (the install-script evaluation and other helpers). Nothing restores the default here: wisp-game-display does.
+        # The program is run for real, against a fake sway socket, so the ORDER and the wire format are observed.
+        import importlib.machinery, importlib.util, os, socket, struct, sys, tempfile, threading
+        path = str(HERE / 'rootfs/usr/bin/wisp-proton-patch')
+        spec = importlib.util.spec_from_loader('wisp_proton_patch5', importlib.machinery.SourceFileLoader('wisp_proton_patch5', path))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        skeleton = (
+            'import os, sys\n'
+            'class Proton:\n'
+            '    def __init__(self, d): pass\n'
+            '    def cleanup_legacy_dist(self): pass\n'
+            '    def do_steampipe_fixups(self): pass\n'
+            'class Session:\n'
+            '    def run(self):\n'
+            '        open(os.environ["EVENTS"], "a").write("game\\n"); return int(os.environ.get("RC", "0"))\n'
+            'def log(m): pass\n'
+            'if __name__ == "__main__":\n'
+            '    if "STEAM_COMPAT_DATA_PATH" not in os.environ:\n'
+            '        log("No compat data path?")\n'
+            '        sys.exit(1)\n'
+            '\n'
+            '    g_proton = Proton(os.path.dirname(sys.argv[0]))\n'
+            '    g_session = Session()\n'
+            '    rc = 0\n'
+            '    if sys.argv[1] == "run":\n'
+            '        rc = g_session.run()\n'
+            '    elif sys.argv[1] == "waitforexitandrun":\n'
+            '        #wait for wineserver to shut down\n'
+            '        #then run\n'
+            '        rc = g_session.run()\n'
+            '    sys.exit(rc)\n')
+        text, status = m.patched(skeleton)
+        self.assertEqual(status, 'patched'); compile(text, 'proton', 'exec')
+        self.assertEqual(m.patched(text), (text, 'present'))
+        d = Path(tempfile.mkdtemp(prefix='wispos-gd-', dir=os.environ.get('TMPDIR')))
+        (d / 'tool').mkdir(); (d / 'data').mkdir(); (d / 'tool' / 'proton').write_text(text); (d / 'tool' / 'version').write_text('11.0-test\n')
+        events = d / 'events'
+        # a fake sway: accepts connections on a unix socket, speaks the i3/sway IPC framing (6-byte magic, native-endian length and type, payload), logs what it was asked BEFORE it replies
+        sock_path = str(d / 'sway-ipc.sock')
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); server.bind(sock_path); server.listen(5); server.settimeout(0.2)
+        state = {'stop': False, 'mute': False}
+        def serve():
+            while not state['stop']:
+                try: conn, _ = server.accept()
+                except (socket.timeout, OSError): continue
+                with conn:
+                    head = b''
+                    while len(head) < 14:
+                        chunk = conn.recv(14 - len(head))
+                        if not chunk: break
+                        head += chunk
+                    if len(head) < 14: continue
+                    magic, (length, kind) = head[:6], struct.unpack('=II', head[6:14])
+                    payload = b''
+                    while len(payload) < length: payload += conn.recv(length - len(payload))
+                    with open(events, 'a') as f: f.write('sway:%s:%d:%s\n' % (magic.decode(), kind, payload.decode().replace(' ', '_')))
+                    if not state['mute']:
+                        reply = b'[{"success":true}]'; conn.sendall(b'i3-ipc' + struct.pack('=II', len(reply), kind) + reply)
+                    else: threading.Event().wait(2)
+        thread = threading.Thread(target=serve, daemon=True); thread.start()
+        def stop():
+            state['stop'] = True; thread.join(2); server.close()
+        self.addCleanup(stop)
+        env = dict(os.environ, STEAM_COMPAT_DATA_PATH=str(d / 'data'), EVENTS=str(events), WISP_SWAYSOCK=sock_path)
+        def go(*args, rc='0', extra=None):
+            events.unlink(missing_ok=True)
+            r = subprocess.run([sys.executable, '-I', str(d / 'tool' / 'proton')] + list(args), env=dict(env, RC=rc, **(extra or {})), capture_output=True, text=True)
+            return r.returncode, events.read_text().split() if events.exists() else [], r.stderr
+        rc, seen, err = go('waitforexitandrun', '/x/game.exe')
+        self.assertEqual((rc, seen), (0, ['sway:i3-ipc:0:output_DSI-1_scale_1', 'game']), err)      # RUN_COMMAND (type 0) answered BEFORE the game runs
+        self.assertEqual(go('waitforexitandrun', '/x/game.exe', rc='3')[:2], (3, ['sway:i3-ipc:0:output_DSI-1_scale_1', 'game']))   # the game's exit status is kept
+        self.assertEqual(go('run', '/x/iscriptevaluator.exe')[:2], (0, ['game']))                  # the evaluation and other helper runs never touch the display
+        self.assertEqual(go('run', '/x/game.exe')[:2], (0, ['game']))
+        self.assertEqual(go('waitforexitandrun', '/x/game.exe', extra={'WISP_SWAYSOCK': str(d / 'missing.sock')})[:2], (0, ['game']))    # no socket: the game still starts
+        stale = d / 'stale.sock'; dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); dead.bind(str(stale)); dead.close()
+        self.assertEqual(go('waitforexitandrun', '/x/game.exe', extra={'WISP_SWAYSOCK': str(stale)})[:2], (0, ['game']))                # a socket nobody listens on: the same
+        state['mute'] = True                                                                       # a sway that takes the command and never answers: bounded by the timeout, the game starts
+        rc, seen, _ = go('waitforexitandrun', '/x/game.exe', extra={'WISP_SWAYSOCK_TIMEOUT': '0.5'})
+        self.assertEqual((rc, seen), (0, ['sway:i3-ipc:0:output_DSI-1_scale_1', 'game']))
+        # a launcher patched by the version before this piece existed gets only the new piece at the next start
+        old = text.replace(m.DISPLAY_START, '')
+        self.assertNotIn(m.DISPLAY_MARK, old); self.assertIn(m.MARK, old); self.assertIn(m.ENV_MARK, old)
+        self.assertEqual(m.patched(old), (text, 'patched'))
+        # a launcher without the game's start verb is not understood and is left alone (the caller writes nothing for 'unrecognised')
+        self.assertEqual(m.patched(skeleton.replace('waitforexitandrun', 'other'))[1], 'unrecognised')
+        # the session shares exactly the one socket with the container, or the piece above has nothing to talk to
+        self.assertIn('"/run/0-runtime-dir/sway-ipc.0.sock"', text)                              # the default socket is the one the session shares (below)
+        session = (HERE / 'rootfs/usr/bin/wisp-steam-session').read_text()
+        self.assertRegex(session, r'export PRESSURE_VESSEL_FILESYSTEMS_RW=[^\n]*/run/0-runtime-dir/sway-ipc\.0\.sock')
+
     def test_the_standard_spelling_of_the_english_locale_exists_so_pressure_vessel_does_not_regenerate_it(self):
         # 2026-10-09: ROCKNIX installs the locale as usr/config/locale/en_US.UTF-8; userconfig-setup rsyncs it (-a keeps links) into the tmpfs /storage/.config/locale that usr/share/locale
         # and usr/lib/locale point to. glibc and pressure-vessel look for the normalised
@@ -1072,6 +1210,47 @@ class CheckRootfsTests(unittest.TestCase):
         self.assertIn('ExecStart=/usr/bin/wisp-steam-watch', unit); self.assertIn('Restart=always', unit)
         self.assertEqual(os.readlink(HERE / 'rootfs/usr/lib/systemd/system/wispos.target.wants/wisp-steam-watch.service'), '../wisp-steam-watch.service')
 
+    def test_a_steam_client_left_stopped_by_its_crash_handler_is_restarted_even_with_no_web_helpers_alive(self):
+        # 2026-10-13, handheld: after two Steam watchdog asserts (main loop stalled > 15 s, UI thread hung) the client process sat in state T (all 17 threads) for 14 minutes, its web
+        # helper a zombie, the screen black. The window rule restarts only with 3 live helpers, so nothing recovered it. This rule stands alone: no uptime, no helpers, no sway.
+        import importlib.machinery, importlib.util, os, tempfile
+        path = str(HERE / 'rootfs/usr/bin/wisp-steam-watch')
+        spec = importlib.util.spec_from_loader('wisp_steam_watch4', importlib.machinery.SourceFileLoader('wisp_steam_watch4', path))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        self.assertEqual(m.decide_stopped(False, True, 5, 0), (None, 0))                       # the session is not running: nothing to restart
+        self.assertEqual(m.decide_stopped(True, False, 5, 0), (None, 0))                       # running: the count starts again
+        action, n = m.decide_stopped(True, True, 0, 0)
+        self.assertEqual((action, n), (None, 1))                                               # one sighting is not enough (a debugger, a slow /proc read)
+        self.assertEqual(m.decide_stopped(True, True, m.STOPPED_CONFIRM - 1, 0), ('restart-stopped', 0))
+        self.assertEqual(m.decide_stopped(True, True, m.STOPPED_CONFIRM, m.MAX_RESTARTS)[0], None)   # the restart budget is spent: stop, never loop
+        # through step(): a session 20 s old, ZERO helpers, sway never asked, and a state saved by the older code (no 'stopped' key)
+        def ask(): self.fail('the stopped rule must not need sway')
+        state = {'misses': 0, 'seen_at': None}
+        actions = []
+        for t in range(m.STOPPED_CONFIRM):
+            action, state = m.step(state, True, 20, 0, ask, 0, float(t), stopped=True); actions.append(action)
+        self.assertEqual(actions, [None] * (m.STOPPED_CONFIRM - 1) + ['restart-stopped'])
+        action, state = m.step(state, True, 20, 0, ask, 0, 99.0, stopped=False)                # running again: no action, the count is zero
+        self.assertEqual((action, state['stopped']), (None, 0))
+        self.assertEqual(m.step({'misses': 0, 'seen_at': None, 'stopped': 1}, True, 20, 0, ask, 0, 1.0, stopped=False)[1]['stopped'], 0)   # a run of sightings must be unbroken
+        # the black-screen window rule is unchanged: a client that is not stopped still goes through it
+        action, _ = m.step({'misses': m.CONFIRM - 1, 'seen_at': None}, True, m.STALL_AFTER + 1, 7, lambda: False, 0, 1.0, stopped=False)
+        self.assertEqual(action, 'restart')
+        # client_stopped reads a /proc-shaped tree: T counts; S, R, Z, a tracing stop 't' and a missing process do not; a name with spaces and parentheses does not confuse it
+        root = Path(tempfile.mkdtemp(prefix='wispos-proc-', dir=os.environ.get('TMPDIR')))
+        for pid, comm, state_ch in ((10, 'steam', 'T'), (11, 'steam', 'S'), (12, 'steam', 'R'), (13, 'steam', 'Z'), (14, 'steam', 't'), (15, 'we) T (ird', 'S'), (16, 'we) S (ird', 'T')):
+            (root / str(pid)).mkdir(); (root / str(pid) / 'stat').write_text('%d (%s) %s 1 0 0\n' % (pid, comm, state_ch))
+        self.assertTrue(m.client_stopped(str(root), [10]))
+        for pid in (11, 12, 13, 14, 15, 999): self.assertFalse(m.client_stopped(str(root), [pid]), pid)
+        self.assertTrue(m.client_stopped(str(root), [11, 999, 16]))                            # any one of several; the odd name is parsed after its LAST ')'
+        self.assertFalse(m.client_stopped(str(root), []))
+        # the newest assert dumps are named in the log before a restart
+        dumps = Path(tempfile.mkdtemp(prefix='wispos-dumps-', dir=os.environ.get('TMPDIR')))
+        self.assertEqual(m.recent_dumps(str(dumps)), [])
+        for n in ('assert_20261013003920_22.dmp', 'assert_20261013004220_3.dmp', 'assert_20261013005329_5.dmp', 'assert_20261013005348_5.dmp', 'root_log.txt', 'assert_notes.txt'): (dumps / n).write_text('x')   # a non-dump named like one is not listed
+        self.assertEqual(m.recent_dumps(str(dumps)), ['assert_20261013004220_3.dmp', 'assert_20261013005329_5.dmp', 'assert_20261013005348_5.dmp'])
+        self.assertEqual(m.recent_dumps(str(dumps / 'nothing-here')), [])
+
     def test_the_watchdog_asks_sway_only_when_the_answer_matters_because_sway_keeps_every_reply(self):
         # Measured 2026-10-09 on the handheld: sway 1.11 retains ~8x the size of every IPC reply (get_tree of a 5 KB tree: +42 kB per call, linear over 800 calls). The
         # watchdog used to ask every 15 s from the moment Steam started, which is 5760 questions a day; sway's heap was 280 MB (all cold, in zram) after 19 hours.
@@ -1097,6 +1276,32 @@ class CheckRootfsTests(unittest.TestCase):
         self.assertEqual(m.step({'misses': 0, 'seen_at': 5.0}, False, 0, 0, lambda: self.fail('asked sway with no session'), 0, 99.0)[0], None)   # no session: no question
         _, state = m.step({'misses': 0, 'seen_at': 5.0}, True, 10, 7, lambda: self.fail('asked sway while the session is young'), 0, 99.0)
         self.assertIsNone(state['seen_at'], 'a restarted session has not been seen yet')
+
+    def test_a_new_crash_dump_makes_the_watchdog_check_the_window_at_once_and_a_missing_window_is_then_confirmed_within_a_minute(self):
+        # 2026-10-14: a web helper crashed (crash_*.dmp), Steam's window left sway's tree and nothing brought it back; the healthy-interval check would have taken up to 15 minutes to notice.
+        import importlib.machinery, importlib.util, tempfile
+        path = str(HERE / 'rootfs/usr/bin/wisp-steam-watch')
+        spec = importlib.util.spec_from_loader('wisp_steam_watch6', importlib.machinery.SourceFileLoader('wisp_steam_watch6', path))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        up = m.STALL_AFTER + 600; healthy = {'misses': 0, 'seen_at': 1000.0}                       # the window was seen a minute ago: no routine question is due
+        asked = []
+        action, state = m.step(healthy, True, up, 8, lambda: (asked.append(1), True)[1], 0, 1060.0)
+        self.assertEqual((action, asked), (None, []), 'without a crash the healthy window is not asked about')
+        action, state = m.step(healthy, True, up, 8, lambda: (asked.append(1), True)[1], 0, 1060.0, poke=True)
+        self.assertEqual((action, asked), (None, [1]), 'a crash dump makes the check happen now; the window is there: nothing happens')
+        state, rounds, now = dict(healthy), 0, 1060.0
+        while True:                                                                              # window gone after the crash
+            rounds += 1; now += m.CHECK_EVERY
+            action, state = m.step(state, True, up, 8, lambda: False, 0, now, poke=(rounds == 1))
+            if action or rounds > 20: break
+        self.assertEqual(action, 'restart'); self.assertLessEqual(rounds * m.CHECK_EVERY, 90, 'confirmed within about a minute, not a healthy interval')
+        self.assertEqual(m.step(healthy, True, m.STALL_AFTER - 1, 8, lambda: self.fail('asked a young session'), 0, 1060.0, poke=True)[0], None)
+        self.assertEqual(m.step(healthy, True, up, 2, lambda: self.fail('asked with too few helpers'), 0, 1060.0, poke=True)[0], None)
+        d = Path(tempfile.mkdtemp(prefix='wispos-dumps-', dir=os.environ.get('TMPDIR'))); self.addCleanup(shutil.rmtree, d, True)
+        self.assertIsNone(m.newest_crash(str(d)))
+        for n in ('assert_20261014001833_5.dmp', 'crash_20261013223306_48.dmp', 'crash_20261014030000_48.dmp', 'root_log.txt'): (d / n).write_text('x')
+        self.assertEqual(m.newest_crash(str(d)), 'crash_20261014030000_48.dmp', 'only crash dumps count, the newest wins; assert dumps do not')
+        self.assertIsNone(m.newest_crash(str(d / 'missing')))
 
     def test_the_watchdog_leaves_evidence_in_the_log_before_it_restarts_steam(self):
         # A stalled UI used to be restarted without a trace of why. Now the busiest web-helper threads (state, CPU, kernel wait, futex address and value) and the GPU
@@ -1365,8 +1570,10 @@ class UiReclaimWiringTests(unittest.TestCase):
         unit = configparser.ConfigParser(strict=False, interpolation=None); unit.optionxform = str
         unit.read(HERE / 'rootfs/usr/lib/systemd/system/wisp-ui-reclaim.service')
         self.assertEqual(unit['Unit']['Before'], 'wisp-steam.service')                  # pages are charged where they were allocated: the helpers must be moved while young
-        # no numbers here: the C defaults are the one place (tested in test_ui_reclaim.py). --freeze is the only combination that measured well: a ceiling alone makes the running UI thrash.
-        self.assertEqual(unit['Service']['ExecStart'], '/usr/bin/wisp-ui-reclaim --freeze')
+        # the idle ceiling is the C default (one place, tested in test_ui_reclaim.py); the game-time ceiling is 250 MiB because 96 MiB makes a running, UNFROZEN UI thrash. Operator decision
+        # 2026-10-14: --follow-focus (ceiling follows the focus, nothing is frozen) with wisp-ui-priority; stability and usability first.
+        self.assertEqual(unit['Service']['ExecStart'], '/usr/bin/wisp-ui-reclaim --follow-focus --high-game 262144000')
+        self.assertNotIn('--freeze', unit['Service']['ExecStart'])
         self.assertEqual(unit['Install']['WantedBy'], 'wispos.target')
         link = HERE / 'rootfs/usr/lib/systemd/system/wispos.target.wants/wisp-ui-reclaim.service'
         self.assertTrue(link.is_symlink()); self.assertEqual(os.readlink(link), '../wisp-ui-reclaim.service')

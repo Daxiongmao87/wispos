@@ -12,8 +12,14 @@
  * Why a cgroup file and not a unit's MemoryHigh=: the image runs systemd in hybrid mode, where the memory controller exists only on the unified v2 hierarchy mounted at
  * /sys/fs/cgroup/unified; processes may be in a v1 cgroup for systemd and a v2 cgroup for memory at the same time.
  *
- *   wisp-ui-reclaim [--root DIR] [--proc DIR] [--high-idle BYTES] [--high-game BYTES] [--poll MS] [--freeze] [--swaymsg PATH] [--once]
- * Defaults (the one place they live): /sys/fs/cgroup/unified, /proc, 300 MiB idle, 96 MiB in a game, 200 ms. The ceilings are INITIAL values: a 2026-10-11 device test (docs/WISPOS-NOTES.md) held
+ *   wisp-ui-reclaim [--root DIR] [--proc DIR] [--high-idle BYTES] [--high-game BYTES] [--poll MS] [--freeze] [--follow-focus] [--swaymsg PATH] [--once]
+ * --follow-focus (dev, 2026-10-13, operator idea "a soft freeze"): the ceiling follows which window is in front exactly as with --freeze (the game ceiling only while a game runs AND the
+ * Steam UI is not in front, the idle ceiling when the UI is shown), but nothing is frozen: the UI stays alive, to be kept quiet by priority instead (docs/WISPOS-NOTES.md "soft freeze").
+ * In that mode a game that is still LAUNCHING (a `reaper` exists but no window other than the Steam UI has taken focus yet) counts as "game in front": the launch is the most memory-hungry moment.
+ * Defaults (the one place they live): /sys/fs/cgroup/unified, /proc, 450 MiB idle, 96 MiB in a game, 200 ms. The idle ceiling was 300 MiB until the first cold start of Steam's UI on a
+ * freshly flashed card (2026-10-12): the UI's working set sits at about 300 MiB, so every allocation was throttled, zram filled to its 450 MiB RAM cap, the load average reached 47 and the
+ * UI took over 30 minutes to appear; with the ceiling lifted it came up in about 10, and with 450 MiB on a fresh start the load peaked at 7, memory pressure was 0 within five minutes and
+ * zram held 115 MB. The ceilings are INITIAL values: a 2026-10-11 device test (docs/WISPOS-NOTES.md) held
  * the UI at 300 MB resident with the rest in zram and the UI up, and a simulated game start took it from 245 MB to 76 MB in 3 s (+75-90 MB for the game); the numbers get tuned on the device.
  * The 200 ms poll matters: pages are charged to the cgroup that was current when they were ALLOCATED, so a helper must be moved while it is young (a 16 hour old helper moved in later
  * is charged 0: its resident pages stay uncharged and the ceiling cannot reach them). So this must be running BEFORE Steam starts (wisp-ui-reclaim.service is ordered before wisp-steam). --once does a single pass and exits (the tests use it); an unusable cgroup root exits 1 with the reason.
@@ -44,7 +50,8 @@ static const char *root = "/sys/fs/cgroup/unified", *procdir = "/proc";
 static volatile sig_atomic_t stop;
 static void on_signal(int sig) { (void)sig; stop = 1; }
 static bool freeze_opt;
-static unsigned long long high_idle = 300ULL << 20, high_game = 96ULL << 20;
+static bool follow_opt;                                           /* --follow-focus: the ceiling follows which window is in front, like --freeze, but nothing is ever frozen */
+static unsigned long long high_idle = 450ULL << 20, high_game = 96ULL << 20;
 
 static bool write_file(const char *path, const char *text, int flags) {
     int fd = open(path, O_WRONLY | O_CREAT | flags, 0644);               /* O_CREAT: the control files exist on a real cgroupfs; a test directory needs them made */
@@ -83,6 +90,7 @@ static bool in_group(const char *procs_path, int pid) {
 /* ---- sway window events: is the Steam UI the window in front? ---- */
 static const char *swaymsg_path = "swaymsg";
 static pid_t sway_pid = -1; static int sway_fd = -1; static time_t sway_retry; static bool ui_focused = true;       /* true = visible: the fail-safe value */
+static bool game_seen;                                                                        /* a window that is not the Steam UI has taken focus since the game (a `reaper`) appeared */
 static char evbuf[16384]; static size_t evlen;
 
 /* The string value after KEY ("key": "value", spaces optional), at most cap-1 characters. */
@@ -102,12 +110,13 @@ static void on_event(const char *line) {
     bool now = !strcmp(cls, "steam");
     if (now != ui_focused) fprintf(stderr, "wisp-ui-reclaim: focus -> %s (%s)\n", cls[0] ? cls : "(no class)", now ? "the Steam UI is in front" : "the Steam UI is hidden");
     ui_focused = now;
+    if (!now) game_seen = true;
 }
 
 static void sway_stop(void) {
     if (sway_fd >= 0) { close(sway_fd); sway_fd = -1; }
     if (sway_pid > 0) { kill(sway_pid, SIGTERM); waitpid(sway_pid, NULL, 0); sway_pid = -1; }
-    evlen = 0; ui_focused = true;                                                      /* no subscription: assume visible */
+    evlen = 0; ui_focused = true; game_seen = false;                                  /* no subscription: assume visible */
 }
 
 static void sway_start(void) {
@@ -154,9 +163,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--high-game") && i + 1 < argc) high_game = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--poll") && i + 1 < argc) poll_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--freeze")) freeze_opt = true;
+        else if (!strcmp(argv[i], "--follow-focus")) follow_opt = true;
         else if (!strcmp(argv[i], "--swaymsg") && i + 1 < argc) swaymsg_path = argv[++i];
         else if (!strcmp(argv[i], "--once")) once = true;
-        else { fprintf(stderr, "usage: %s [--root DIR] [--proc DIR] [--high-idle BYTES] [--high-game BYTES] [--poll MS] [--freeze] [--swaymsg PATH] [--once]\n", argv[0]); return 2; }
+        else { fprintf(stderr, "usage: %s [--root DIR] [--proc DIR] [--high-idle BYTES] [--high-game BYTES] [--poll MS] [--freeze] [--follow-focus] [--swaymsg PATH] [--once]\n", argv[0]); return 2; }
     }
     if (high_game == 0 || high_idle == 0 || high_game > high_idle || poll_ms < 100) { fprintf(stderr, "wisp-ui-reclaim: need 0 < high-game <= high-idle and poll >= 100 ms\n"); return 2; }
     setvbuf(stderr, NULL, _IOLBF, 0);
@@ -174,7 +184,11 @@ int main(int argc, char **argv) {
             if (!in_group(procs, ui[i]) && write_file(procs, pid, O_APPEND)) moved++;      /* a helper that exited meanwhile is simply not moved */
         }
         if (moved) fprintf(stderr, "wisp-ui-reclaim: %d web helper process(es) now in %s\n", moved, CGROUP_NAME);
-        bool hidden = game && (!freeze_opt || !ui_focused);                               /* without --freeze the old rule: a game means hidden; with it, only while the UI is not in front */
+        if (!game) game_seen = false;
+        /* without --freeze or --follow-focus the old rule: a game means hidden; with either, only while the UI is not in front. --follow-focus (not --freeze) also counts a game that is still
+         * LAUNCHING as hidden: its window has not taken focus yet, and that is the most memory-hungry moment (prefix, Wine, FEX), measured 2026-10-13: a UI at its big ceiling during the launch
+         * thrashed the machine (memory pressure 24%, 1 fps, no window in 15 minutes). */
+        bool hidden = game && (!(freeze_opt || follow_opt) || !ui_focused || (follow_opt && !freeze_opt && sway_fd >= 0 && !game_seen));      /* only with a live subscription: a lost one means visible, never squeezed blind */
         unsigned long long want = hidden ? high_game : high_idle; int want_frozen = freeze_opt && hidden;
         if (freeze_opt && !want_frozen && frozen != 0) {                            /* thaw BEFORE the ceiling goes back up: the UI must be able to run while it pages back in */
             if (write_file(freeze, "0\n", O_TRUNC)) { frozen = 0; fprintf(stderr, "wisp-ui-reclaim: %s: thawed\n", CGROUP_NAME); }
@@ -190,7 +204,7 @@ int main(int argc, char **argv) {
             else fprintf(stderr, "wisp-ui-reclaim: cannot freeze %s: %s\n", freeze, strerror(errno));
         }
         if (once) return 0;
-        if (freeze_opt && sway_fd < 0 && time(NULL) >= sway_retry) { sway_start(); sway_retry = time(NULL) + 2; }
+        if ((freeze_opt || follow_opt) && sway_fd < 0 && time(NULL) >= sway_retry) { sway_start(); sway_retry = time(NULL) + 2; }
         if (sway_fd >= 0) { struct pollfd pf = {.fd = sway_fd, .events = POLLIN}; if (poll(&pf, 1, poll_ms) > 0) sway_read(); }
         else { struct timespec ts = {poll_ms / 1000, (poll_ms % 1000) * 1000000L}; nanosleep(&ts, NULL); }
     }

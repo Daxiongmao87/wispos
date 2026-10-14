@@ -1,0 +1,14 @@
+# Full scale while a game is in front, the half-resolution default otherwise; see /usr/bin/wisp-game-display. Runs only with the Steam session (game mode): desktop mode sets its own display.
+[Unit]
+Description=WispOS full-scale display while a game is in front
+After=sway.service
+Wants=sway.service
+PartOf=wisp-steam.service
+
+[Service]
+Environment=XDG_RUNTIME_DIR=/var/run/0-runtime-dir
+Environment=SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
+ExecStart=/usr/bin/wisp-game-display
+Restart=always
+RestartSec=2
+Nice=10

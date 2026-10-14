@@ -93,6 +93,17 @@ class TestReleaseTests(unittest.TestCase):
         self.assertEqual(sorted(set(old) - set(new)), ['usr/lib/systemd/systemd']); self.assertEqual(sorted(set(new) - set(old)), [])
         self.assertEqual(sorted(k for k in new if old[k] != new[k]), ['etc/os-release'])
 
+    def test_a_dev_device_gets_the_dev_system_unless_the_release_one_is_asked_for(self):
+        dev = self.work / 'out/variants'; dev.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.work / 'rootfs/tree', self.d / 'devtree', symlinks=True); (self.d / 'devtree/usr/lib/wispos/DEV-BUILD').write_text('dev\n')
+        r = run('mksquashfs', str(self.d / 'devtree'), str(dev / 'SYSTEM-dev'), '-noappend', '-quiet', '-no-xattrs', '-comp', 'gzip', '-all-root'); assert r.returncode == 0, r.stderr
+        try:
+            r = self.make(); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            rel = next((self.work / 'test-release').glob('*/release')); self.assertIn('usr/lib/wispos/DEV-BUILD', tree_of(rel / 'SYSTEM', self.d / 'dv1'))
+            r = self.make('--release'); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            rel = next((self.work / 'test-release').glob('*/release')); self.assertNotIn('usr/lib/wispos/DEV-BUILD', tree_of(rel / 'SYSTEM', self.d / 'dv2'))
+        finally: shutil.rmtree(dev, True)
+
     def test_the_dead_kernel_differs_from_the_candidates_in_its_first_instruction_only(self):
         r = self.make('--dead-kernel'); self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         rel = next((self.work / 'test-release').glob('*-dead-kernel')) / 'release'; real = (self.work / 'out/kernel/Image').read_bytes(); dead = (rel / 'KERNEL').read_bytes()
@@ -172,6 +183,7 @@ MUTANTS = [
     ('the dead kernel is not dead', 'data[0:4] = (0x14000000).to_bytes(4, \'little\')', 'data[0:4] = data[0:4]'),
     ('the dead kernel is not checked to be an Image', "assert data[56:60] == b'ARM\\x64', 'not an arm64 Image'", 'pass'),
     ('both experiments at once', '[ -z "$BROKEN" ] || [ -z "$DEAD" ] ||', 'false ||'),
+    ('a dev device is given the release system', '{ [ -z "$RELEASE" ] && [ -f "$SYSTEM" ]; } || SYSTEM=$WORK/out/SYSTEM;', 'SYSTEM=$WORK/out/SYSTEM;'),
     ('the id check is gone', '[[ $BUILD =~ ^[0-9]{8}\\.[0-9]+$ ]] ||', 'true ||'),
     ('the work directory may be anywhere', 'case "$WORK" in /mnt/hdd/*) ;;', 'case "$WORK" in /*) ;;'),
 ]

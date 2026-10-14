@@ -50,9 +50,6 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 LIB = Path(__file__).resolve().parent
-OLD_AFFINITY = b'exec taskset 0x7c $(pwd)/steamwebhelper "$@" &> ~/.steam/steam/logs/steamwebhelper.log'
-NEW_AFFINITY = b'exec "$(pwd)/steamwebhelper" "$@" &> ~/.steam/steam/logs/steamwebhelper.log'
-WRAPPER = 'steamrtarm64/steamwebhelper.sh'
 CHUNK = 1 << 18
 
 
@@ -126,14 +123,6 @@ def download(url, expected_sha, size, destination, progress, server="Steam's ser
     os.replace(part, destination)
 
 
-def apply_affinity_patch(steam_dir):
-    path = Path(steam_dir) / WRAPPER
-    data = path.read_bytes()
-    if data.count(OLD_AFFINITY) != 1:
-        raise Failure('Steam\'s start script is not what this version of WispOS expects.')
-    path.write_bytes(data.replace(OLD_AFFINITY, NEW_AFFINITY))
-
-
 def tool_ready(runtime, tool):
     """True when exactly the pinned build of the compatibility tool is installed under Steam's directory (the marker is written last)."""
     root = Path(runtime) / 'steam' / 'compatibilitytools.d' / tool['name']
@@ -168,11 +157,18 @@ def zstd_stream(path):
         raise Failure('The compatibility tool that was downloaded is damaged. Try again.')
 
 
-def extract_tool(archive, name, staging):
+def extract_tool(archive, name, staging, total=0, report=None):
     """Unpack the verified tool archive into staging/<name>/ without trusting it: tarfile's 'data' filter refuses absolute and .. paths, links that leave the tree,
     devices and setuid bits, and everything must sit under <name>/ (the archive's own './' entry is skipped). The one thing the filter would refuse in the real archive,
-    absolute links into /dev (Wine's COM-port entries), is skipped rather than created: the installed tree holds no absolute link at all."""
+    absolute links into /dev (Wine's COM-port entries), is skipped rather than created: the installed tree holds no absolute link at all.
+    total/report: the unpacked size the lock records and a callback(done_bytes, total_bytes), called at most twice a second as files are unpacked, so the screen can show real progress
+    during the longest step after the download (1.9 GiB written to the SD card)."""
+    seen = {'bytes': 0, 'at': 0.0}
     def only_the_tool(member, dest):
+        if report and total:
+            seen['bytes'] += max(member.size, 0) if member.isreg() else 0
+            now = time.monotonic()
+            if now - seen['at'] >= 0.5: seen['at'] = now; report(min(seen['bytes'], total), total)
         parts = PurePosixPath(member.name).parts
         if not parts:
             return None
@@ -340,7 +336,6 @@ def install(lock_path, runtime, cache, min_free_mib, tool_lock=None, tool_min_fr
             shutil.rmtree(staging)
         for component in lock['components']:
             extractor.extract(cache / component['url'].rsplit('/', 1)[1], staging)
-        apply_affinity_patch(staging)
         try:
             extractor.verify_arm64(staging)
         except ValueError as error:
@@ -348,7 +343,8 @@ def install(lock_path, runtime, cache, min_free_mib, tool_lock=None, tool_min_fr
     if not tool_done:
         if tool_staging.exists():
             shutil.rmtree(tool_staging)
-        extract_tool(cache / tool['url'].rsplit('/', 1)[1], tool['name'], tool_staging)
+        extract_tool(cache / tool['url'].rsplit('/', 1)[1], tool['name'], tool_staging, total=int(tool.get('extracted_mib', 0)) << 20,
+                     report=lambda done, total: say('progress', done, total, tool['name']))
 
     say('phase finish')
     if not steam_done:

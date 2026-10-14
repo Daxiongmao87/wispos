@@ -17,7 +17,11 @@ import os, re, sys
 DEFAULT = '/storage/wispos/home/.local/share/Steam/config/config.vdf'
 STEAM_ROOT = '/storage/wispos/runtime/steam'
 CUSTOM_TOOL = 'Proton11-ARM64-A57-v80'          # the internal name in its compatibilitytool.vdf
-SEED_PRIORITY = '75'                            # our signature: a default with this priority was written by us
+# Our signature: a default with this priority was written by us. It must outrank Valve's own recommendations: in SteamOS mode (-steamos3) Steam records a per-game mapping "at priority 85 to tool
+# proton-stable" for every game it knows (compat_log.txt, measured 2026-10-14), and a per-game mapping beats a global default of lower priority, so with 75 every game was launched with
+# Valve's STOCK Proton, which spins in wineboot on this CPU (docs/WISPOS-NOTES.md). 200 beats 85 and stays below 250, the priority of a person's own explicit choice in Steam's settings.
+SEED_PRIORITY = '200'
+LEGACY_PRIORITY = '75'                          # what earlier versions wrote; upgraded in place
 
 
 def entry(tool):
@@ -97,10 +101,15 @@ def seed(text, tool='proton-stable'):
             for j in range(i + 2, end):
                 m = re.match(r'^\s*"(name|priority)"\s+"([^"]*)"\s*$', lines[j])
                 if m: fields[m.group(1)] = (j, m.group(2))
-            ours = fields.get('name', (0, ''))[1] == 'proton-stable' and fields.get('priority', (0, ''))[1] == SEED_PRIORITY
-            if ours and tool != 'proton-stable':
-                j = fields['name'][0]
-                lines[j] = lines[j].replace('"proton-stable"', '"%s"' % tool, 1)
+            name, prio = fields.get('name', (0, ''))[1], fields.get('priority', (0, ''))[1]
+            ours = name in ('proton-stable', CUSTOM_TOOL) and prio in (LEGACY_PRIORITY, SEED_PRIORITY)       # anything else is the user's own choice: never touched
+            if ours and (name != tool or prio != SEED_PRIORITY):
+                if name != tool:
+                    j = fields['name'][0]
+                    lines[j] = lines[j].replace('"%s"' % name, '"%s"' % tool, 1)
+                if prio != SEED_PRIORITY:
+                    j = fields['priority'][0]
+                    lines[j] = re.sub(r'^(\s*"priority"\s+")[^"]*(")', lambda m: m.group(1) + SEED_PRIORITY + m.group(2), lines[j], count=1)
                 return ''.join(lines), 'upgraded'
             return text, 'present'
         i += 1

@@ -1,0 +1,22 @@
+         $2.:ooo:
+      $2:oOOOOOOO.
+     $2oOOOOOOOo
+    $2:OOOOOOOO:   oOOo
+    $2OOOOOOOOOO  :OOOO:
+    $2:OOOOOOOOOO: oOOOo
+     $2oOOOOOOOOOOo.:OOOOo
+      $2:OOOOOOOOOOOo :OOOO:
+        $2:oOOOOOOOOOO..OOOOo
+           $2:oOOOOOOOO  OOOOO
+              $2.:OOOOOo :OOOOo
+     $2.$1########   $2:OOOO  OOOOO
+   $1#############$2.  oOO. OOOOO:
+ $2.$1################  $2oO .OOOOO:
+ $1##################  $2o oOOOOO
+$2.$1##################   $2:OOOOOo
+ $1##################  $2.OOOOOO
+ $1#################  $2.OOOOOO.
+  $2:$1##############  $2:OOOOOo
+    $2:$1##########$2.  oOOOOO:
+        $2...    :oOOOO:.
+           $2.:oooo::

@@ -1,0 +1,14 @@
+#!/bin/sh
+# taskset shim, first on the Steam session's PATH (usr/bin/wisp-steam-session). Valve's steamrtarm64/steamwebhelper.sh ends in `exec taskset 0x7c steamwebhelper "$@"` (written for the Deck's 8 threads: on this
+# 4-core SoC the mask confines all of Chromium to two cores). Editing that file does not work: Steam verifies it by CRC and re-extracts its whole package (about 8 minutes) to put Valve's original back
+# (measured 2026-10-14, docs/WISPOS-NOTES.md). So the file stays exactly as Valve ships it, and this shim answers its `taskset` call instead:
+#   for the web helper: the real taskset with all four cores (0x0f) and the Chromium switches below inserted before Steam's own arguments;
+#   for anything else: the real taskset, unchanged.
+# Switches (operator decision 2026-10-14): GPU rasterisation, zero-copy raster, low-end device mode. Their measured effect on the UI's CPU and RAM was nil (docs/WISPOS-NOTES.md); they are kept on request.
+real=/usr/bin/taskset
+[ -x "$real" ] || real=/bin/taskset
+if [ "${2##*/}" = steamwebhelper ]; then
+    helper=$2; shift 2
+    exec "$real" 0x0f "$helper" --enable-gpu-rasterization --enable-zero-copy --enable-low-end-device-mode "$@"
+fi
+exec "$real" "$@"

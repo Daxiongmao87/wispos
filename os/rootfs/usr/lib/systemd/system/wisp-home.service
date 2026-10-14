@@ -1,0 +1,14 @@
+# The pad's Steam button: from a running game to Steam's UI and back (see /usr/bin/wisp-home). Runs only with the Steam session (game mode): desktop mode has its own pad handling.
+[Unit]
+Description=WispOS Steam button: game to Steam and back
+After=sway.service
+Wants=sway.service
+PartOf=wisp-steam.service
+
+[Service]
+Environment=XDG_RUNTIME_DIR=/var/run/0-runtime-dir
+Environment=SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
+ExecStart=/usr/bin/wisp-home
+Restart=always
+RestartSec=2
+Nice=10

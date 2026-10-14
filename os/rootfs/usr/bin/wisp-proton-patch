@@ -13,6 +13,13 @@ Second piece, same launcher, same run: every game process gets `PAN_MESA_DEBUG=l
 Mesa's mutex still locked and deadlocks on its next GL call (measured 2026-10-10: seven starts of the same match out of seven hung without it, with `linear` two out of two ran, one at a mean of 45.7 fps;
 `noafbc` alone did not help). Linear textures avoid the tiled upload path. A WORKAROUND for a Mesa bug, not a feature: delete the piece when the image's Mesa is fixed
 (docs/WISPOS-NOTES.md, "OPEN, CORE-LEVEL"; report draft in docs/upstream/). Valve's own launcher sets Mesa environment defaults the same way (MESA_EXTENSION_OVERRIDE for ARM64).
+Third piece, same launcher: when Steam starts the GAME (`proton waitforexitandrun`, never the install-script evaluation or other helper runs) the panel is switched to full
+resolution BEFORE the game can initialise graphics (`output DSI-1 scale 1`, sent straight to sway's IPC socket). Why: the image's default display is half resolution (output scale 2,
+so Steam's UI is laid out on 360x240); a game that enumerates display modes at that scale gets a 360x240 screen and cannot create its 640x480 window (measured on the handheld
+2026-10-12: the window was 360x228, and every earlier working run had a script switch the scale first). A switch made when the game's WINDOW takes focus is too late, the mode list
+was read already. The launcher runs INSIDE Steam's pressure-vessel container (checked on the handheld 2026-10-13: no /usr/bin/wisp-display, no swaymsg, no sway socket path there), so
+the switch speaks the IPC protocol itself (a 14-byte header and the command) and the session shares the one socket with PRESSURE_VESSEL_FILESYSTEMS_RW (wisp-steam-session). Nothing
+here puts the default back: wisp-game-display is the one authority for that (it counts a running `proton waitforexitandrun` as "a game" and notices the launcher's end, normal or killed).
 Idempotent (a marker comment guards each piece), syntax-checked before writing, keeps `proton.wisp-orig`. Run before every Steam start by wisp-steam-session (Proton may be updated or
 installed while Steam runs). usage: wisp-proton-patch [PATH_TO_proton ...]   (default: every compatibilitytools.d/Proton*/proton and steamapps/common/Proton*(ARM64)/proton)   exit 0 = fine, 1 = a file not understood
 """
@@ -50,7 +57,26 @@ ENV = '    ' + ENV_MARK + ''' (wisp-proton-patch): Mesa's panfrost overruns a GP
 
 '''
 
+DISPLAY_MARK = '# WispOS game display'
+DISPLAY_START = '        ' + DISPLAY_MARK + """ (wisp-proton-patch): the game must see the full-resolution display before it initialises graphics; best effort, never blocks the launch beyond the timeout
+        try:
+            import socket as wisp_socket, struct as wisp_struct
+            wisp_cmd = b"output DSI-1 scale 1"
+            for wisp_path in (os.environ.get("WISP_SWAYSOCK", ""), "/run/0-runtime-dir/sway-ipc.0.sock"):
+                if wisp_path and os.path.exists(wisp_path):
+                    wisp_sock = wisp_socket.socket(wisp_socket.AF_UNIX, wisp_socket.SOCK_STREAM)
+                    wisp_sock.settimeout(float(os.environ.get("WISP_SWAYSOCK_TIMEOUT", "5")))
+                    wisp_sock.connect(wisp_path)
+                    wisp_sock.sendall(b"i3-ipc" + wisp_struct.pack("=II", len(wisp_cmd), 0) + wisp_cmd)
+                    wisp_sock.recv(4096)
+                    wisp_sock.close()
+                    break
+        except Exception:
+            pass
+"""
+
 ANCHOR_HEAD = '    g_proton = Proton(os.path.dirname(sys.argv[0]))\n'
+ANCHOR_WAIT = '    elif sys.argv[1] == "waitforexitandrun":\n'
 ANCHOR_TAIL = '        rc = g_session.run()\n    elif sys.argv[1] == "waitforexitandrun":\n'
 
 
@@ -58,7 +84,7 @@ def patched(text):
     """(new text, status): 'patched' (a piece was added), 'present' (all pieces already there) or 'unrecognised' (text unchanged). Each piece is added only if its marker is
     missing and checks only the anchors it needs (an already patched launcher no longer contains the original tail anchor), so a launcher patched by an older version of
     this tool gets the newer pieces at the next start."""
-    if MARK in text and ENV_MARK in text: return text, 'present'
+    if MARK in text and ENV_MARK in text and DISPLAY_MARK in text: return text, 'present'
     if text.count(ANCHOR_HEAD) != 1: return text, 'unrecognised'
     if MARK not in text:
         if text.count(ANCHOR_TAIL) != 1 or text.index(ANCHOR_HEAD) > text.index(ANCHOR_TAIL): return text, 'unrecognised'
@@ -67,6 +93,9 @@ def patched(text):
         text = text.replace(ANCHOR_TAIL, head + TAIL + tail, 1)
     if ENV_MARK not in text:
         text = text.replace(ANCHOR_HEAD, ENV + ANCHOR_HEAD, 1)
+    if DISPLAY_MARK not in text:
+        if text.count(ANCHOR_WAIT) != 1: return text, 'unrecognised'
+        text = text.replace(ANCHOR_WAIT, ANCHOR_WAIT + DISPLAY_START, 1)
     try: compile(text, 'proton', 'exec')
     except SyntaxError: return text, 'unrecognised'
     return text, 'patched'
