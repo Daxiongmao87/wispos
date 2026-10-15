@@ -501,6 +501,13 @@ char wd_tile_letter(const char *name) {
     return '?';
 }
 
+const char *wd_glyph_name(const char *icon) {
+    static const char *const known[] = { "apps", "browser", "terminal", "settings", "game", "images", "monitor", "about" };
+    if (!icon || strncmp(icon, "wisp-", 5)) return NULL;
+    for (size_t i = 0; i < sizeof known / sizeof *known; i++) if (!strcmp(icon + 5, known[i])) return known[i];
+    return NULL;
+}
+
 int wd_tile_colour(const char *name) {
     unsigned h = 5381;
     for (; name && *name; name++) h = h * 33u + (unsigned)lower((unsigned char)*name);

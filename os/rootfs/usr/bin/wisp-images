@@ -1,0 +1,21 @@
+#!/bin/sh
+# wisp-images: the desktop mode's Images tile. Opens the pictures in the Downloads folder with swayimg, in name order; when there are none it says so in a toast (the desktop shell's
+# own, like wisp-browser's), because swayimg given nothing to show prints "No images to view" to a journal and exits, which left the tile looking dead (found on the handheld 2026-10-15).
+# Environment (test seams; each has the production default): WISP_IMAGES_DIR, WISP_IMAGES_VIEWER, WISP_IMAGES_DOCK.
+DIR=${WISP_IMAGES_DIR:-/storage/downloads}
+VIEWER=${WISP_IMAGES_VIEWER:-swayimg}
+DOCK=${WISP_IMAGES_DOCK:-wisp-dock}
+
+# the pictures swayimg can open, by extension (any case); a glob that matches nothing stays literal and is skipped by the -f test
+set --
+for f in "$DIR"/*; do
+    [ -f "$f" ] || continue
+    case $(printf '%s' "$f" | tr 'A-Z' 'a-z') in
+        *.png|*.jpg|*.jpeg|*.gif|*.webp|*.bmp) set -- "$@" "$f";;
+    esac
+done
+if [ $# -eq 0 ]; then
+    "$DOCK" --ctl toast "Images|No pictures in Downloads yet. Pictures you save from the browser appear here.|6" >/dev/null 2>&1 || echo "wisp-images: no pictures in $DIR" >&2
+    exit 0
+fi
+exec "$VIEWER" "$@"

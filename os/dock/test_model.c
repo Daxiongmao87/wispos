@@ -537,6 +537,17 @@ static void test_menu(void) {
     CHECK(wd_menu_top_row(5, 0, 2, 0) == 0 && wd_menu_top_row(5, 4, 0, 0) == 0, "degenerate sizes");
 }
 
+/* Regression (device, 2026-10-15): the shell copied each glyph name into a ring of 8 buffers, so once the dock and the 7-tile application menu had asked for more than 8 icons the
+ * Browser's tile read "settings" (a blue gear). A name returned for one tile must stay valid for as long as the shell lives. */
+static void test_glyph_names(void) {
+    const char *ids[] = { "wisp-browser", "wisp-terminal", "wisp-settings", "wisp-game", "wisp-images", "wisp-monitor", "wisp-about", "wisp-apps", "wisp-browser", "wisp-terminal" };
+    const char *got[10];
+    for (int i = 0; i < 10; i++) got[i] = wd_glyph_name(ids[i]);
+    for (int round = 0; round < 3; round++) for (int i = 0; i < 10; i++) (void)wd_glyph_name(ids[(i + round) % 10]);
+    for (int i = 0; i < 10; i++) CHECK(got[i] && !strcmp(got[i], ids[i] + 5), "a glyph name stays what it was after many later requests");
+    CHECK(!wd_glyph_name("firefox") && !wd_glyph_name("wisp-nonesuch") && !wd_glyph_name("wisp-") && !wd_glyph_name("") && !wd_glyph_name(NULL), "only our own icon set has glyphs");
+}
+
 static void test_tokens(void) {
     CHECK(WISP_UI_DOCK_H == 44 && WISP_UI_DOCK_TILE == 36 && WISP_UI_DOCK_PITCH == 44 && WISP_UI_MENU_COLS == 4, "the locked tokens the layout relies on");
 }
@@ -553,6 +564,7 @@ int main(void) {
     test_windows();
     test_dock();
     test_menu();
+    test_glyph_names();
     test_tokens();
     char cmd[600]; snprintf(cmd, sizeof cmd, "rm -rf '%s'", root);
     if (system(cmd)) return 2;

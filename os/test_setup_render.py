@@ -80,6 +80,19 @@ class SetupRenderTests(unittest.TestCase):
         want = np.asarray(Image.open(SETUP / 'design/list.png').convert('RGB'))
         self.assertTrue((self.demo('list') == want).all())
 
+    def test_the_large_spinner_sits_left_of_the_bar_in_every_phase_flush_with_it(self):
+        # LOCKED by the operator 2026-10-14 (docs/WISPOS-UI-LANGUAGE.md "Large spinner"): in the downloading AND the unpacking phase a 47 px spinner (ring radius 19, 9 px anti-aliased dots)
+        # whose top edge is the bar's top (y 170) and whose bottom edge is the bottom of the digits (y 217), left edge on the panel's left edge (x 250); the bar and the number start at
+        # x 311 and the bar ends at x 700. Pixel rows 170..216 and columns 250..296 are the 47 px.
+        for state in ('download', 'extract'):
+            shot = self.demo(state)
+            area = shot[150:240, 250:310]
+            ink = (area != NAVY).any(axis=2)
+            rows = 150 + np.where(ink.any(axis=1))[0]; cols = 250 + np.where(ink.any(axis=0))[0]
+            self.assertEqual((int(rows.min()), int(rows.max()), int(cols.min()), int(cols.max())), (170, 216, 250, 296), '%s: the spinner is not the locked 47 px square' % state)
+            bar = (shot[175, 300:720] != NAVY).any(axis=1); xs = 300 + np.where(bar)[0]                       # right of the spinner (its dots end at x 296)
+            self.assertEqual((int(xs.min()), int(xs.max())), (311, 699), '%s: the bar must run x 311..699 (the spinner takes the left 61 px)' % state)
+
     def test_the_symbols_page_keeps_every_key_inside_the_panel(self):
         shot = self.demo('symbols')
         self.assertEqual(int((shot[166:382, 701:720] != NAVY).any(axis=2).sum()), 0, 'something is drawn right of the panel in the keyboard band')

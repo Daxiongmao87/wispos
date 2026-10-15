@@ -70,6 +70,7 @@ int  wd_exec_argv(const WdApp *app, const char *terminal, char *buf, size_t cap,
 bool wd_icon_find(const char *icon, int want, const char *const *roots, int nroots, char *out, size_t cap);
 char wd_tile_letter(const char *name);
 int  wd_tile_colour(const char *name);                            /* 0..3: accent, green, glyph grey, dim: the palette, chosen from the name */
+const char *wd_glyph_name(const char *icon);                      /* "wisp-browser" -> "browser": our own icon set, a constant string that stays valid; NULL for any other icon name */
 
 /* ------------------------------------------------------------------ pins */
 typedef struct { char id[WD_MAX_PINS][WD_ID]; int n; } WdPins;

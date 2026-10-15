@@ -77,6 +77,18 @@
 #define WISP_UI_SPIN_SPEED    12
 #define WISP_UI_SPIN_FADE     215    /* alpha = 255 - WISP_UI_SPIN_FADE x age, age 0 (head) .. 1 (tail) */
 
+/* large spinner of the Steam download screen (LOCKED, operator 2026-10-14; docs/WISPOS-UI-LANGUAGE.md "Large spinner", design record os/setup/design/mockup-large-spinner.html): in every phase,
+ * LEFT of the bar and the percentage, its top edge on the bar's top (y 170) and its bottom edge on the bottom of the digits (y 217). Same dots, fade and speed as above. The dots are 9 px
+ * and anti-aliased: disc() draws only even sizes, so the program needs its own dot routine for this ring. Check the bottom edge on a screenshot of the device (+-1 px). */
+#define WISP_UI_SPIN_BIG_SIZE    47       /* outer diameter, px */
+#define WISP_UI_SPIN_BIG_R       19.0f    /* ring radius, centre to dot centre */
+#define WISP_UI_SPIN_BIG_DOT_D   9.0f     /* dot diameter */
+#define WISP_UI_SPIN_BIG_GAP     14       /* spinner to bar */
+#define WISP_UI_SPIN_BIG_CX      273.5f   /* WISP_UI_PANEL_X + SIZE / 2 */
+#define WISP_UI_SPIN_BIG_CY      193.5f   /* middle of y 170 .. 217 */
+#define WISP_UI_PROGRESS_X       311      /* the bar and the number start here (PANEL_X + SIZE + GAP); the bar ends at x 700 */
+#define WISP_UI_PROGRESS_W       389
+
 
 /* desktop-mode wallpaper (docs/WISPOS-UI-LANGUAGE.md "Desktop mode"; LOCKED 2026-10-12, operator 2026-10-12: "something subtle with gradients, perhaps with a very subtle negative space of our badge").
  * os/ui/wallpaper.py draws it from these; the blues are the ground and the accent, only darker and lifted a little. */

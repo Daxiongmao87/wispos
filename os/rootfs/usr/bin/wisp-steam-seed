@@ -10,6 +10,11 @@ rootfs and graphics provider this image does not have; docs/WISPOS-NOTES.md, Wor
 What it does: in config.vdf, InstallConfigStore/Software/Valve/Steam/CompatToolMapping, add the global entry "0" = proton-stable if there is no entry "0". An existing
 "0" entry (the user's own choice in Steam's settings) is never touched. Everything else in the file is left as it is (text edit, not a rewrite). If no config.vdf
 exists yet (first start) a minimal one is written; Steam fills in the rest.
+Second job, the SteamOS UI scale (operator decision 2026-10-15: "150 %" = his own 9-notch hand pick, ScaleFactor 0.842373907566070557 = 1.45 x Steam's auto value on this panel; Steam's
+control shows no percentage): Steam stores a manual UI scale as a per-display block under InstallConfigStore/UI/display, named "<display>|||<mode>" ("External: DSI-1 3\"|||Fullscreen-720x480"
+on this device), holding ScaleFactor; its mere presence switches "Automatically Scale User Interface" off and Steam mirrors the value into display/Current. The seed adds that block when
+no per-display block with a ScaleFactor exists (a user's own choice, any name, is never touched; Steam's own Current block does not count and is not edited). Verified on the handheld
+2026-10-15 (docs/WISPOS-NOTES.md "UI scale seed"): a config holding only the seeded block started Steam normally, in the same 47 s as without it, and the UI was larger.
 usage: wisp-steam-seed [CONFIG_VDF]   (default /storage/wispos/home/.local/share/Steam/config/config.vdf)   exit 0 = fine (seeded or nothing to do), 1 = file not understood (left alone)
 """
 import os, re, sys
@@ -117,6 +122,53 @@ def seed(text, tool='proton-stable'):
     return ''.join(lines), 'seeded'
 
 
+UI_SCALE_DISPLAY = 'External: DSI-1 3"|||Fullscreen-720x480'     # Steam's name for this panel in its normal Game-mode start (measured 2026-10-15)
+UI_SCALE = '0.842373907566070557'
+
+
+def ui_block(tabs):
+    """The per-display block as text, indented by `tabs` (the quote inside the name is escaped the way Steam writes it)."""
+    name = UI_SCALE_DISPLAY.replace('"', '\\"')
+    return indent('"%s"\n{\n\t"ScaleFactor"\t\t"%s"\n}\n' % (name, UI_SCALE), tabs)
+
+
+def child_blocks(lines, op, cl):
+    """(key_idx, open_idx, close_idx) of the direct child blocks between the braces at op and cl."""
+    out, i = [], op + 1
+    while i < cl - 1:
+        if lines[i + 1].strip() == '{' and lines[i].strip().startswith('"'):
+            end = block_end(lines, i + 1)
+            if end is None: break
+            out.append((i, i + 1, end)); i = end + 1
+        else:
+            i += 1
+    return out
+
+
+def seed_ui_scale(text):
+    """(new text, status): 'seeded' (the per-display block added), 'present' (a per-display block with a ScaleFactor exists, whatever its name: left alone) or 'unrecognised'."""
+    lines = text.splitlines(True)
+    if not lines: return text, 'unrecognised'
+    if not lines[-1].endswith('\n'): lines[-1] += '\n'
+    ics = find_block(lines, 'InstallConfigStore')
+    if ics is None: return text, 'unrecognised'
+    key, op, cl = ics
+    depth = len(lines[key]) - len(lines[key].lstrip('\t')) + 1
+    ui = next((b for b in child_blocks(lines, op, cl) if lines[b[0]].strip() == '"UI"'), None)
+    if ui is None:
+        lines[cl:cl] = [indent('"UI"\n{\n\t"display"\n\t{\n' + ui_block(2) + '\t}\n}\n', depth)]
+        return ''.join(lines), 'seeded'
+    disp = next((b for b in child_blocks(lines, ui[1], ui[2]) if lines[b[0]].strip() == '"display"'), None)
+    if disp is None:
+        lines[ui[2]:ui[2]] = [indent('"display"\n{\n' + ui_block(1) + '}\n', depth + 1)]
+        return ''.join(lines), 'seeded'
+    for b in child_blocks(lines, disp[1], disp[2]):                 # a user's (or an earlier) per-display choice: anything but Steam's own Current block
+        if lines[b[0]].strip() == '"Current"': continue
+        if any(re.match(r'^\s*"ScaleFactor"\s+"', lines[j]) for j in range(b[1] + 1, b[2])): return text, 'present'
+    lines[disp[2]:disp[2]] = [ui_block(depth + 2)]
+    return ''.join(lines), 'seeded'
+
+
 def main(argv):
     path = argv[0] if argv else DEFAULT
     steam_root = argv[1] if len(argv) > 1 else STEAM_ROOT
@@ -125,13 +177,16 @@ def main(argv):
     new, status = seed(old, tool)
     if status == 'unrecognised':
         print('wisp-steam-seed: %s has an unexpected structure; left alone' % path); return 1
-    if status in ('seeded', 'upgraded'):
+    new, scale = seed_ui_scale(new)
+    if scale == 'unrecognised':
+        print('wisp-steam-seed: %s has no InstallConfigStore for the UI scale; left alone' % path); scale = 'present'
+    if status in ('seeded', 'upgraded') or scale == 'seeded':
         os.makedirs(os.path.dirname(path), exist_ok=True)
         mode = os.stat(path).st_mode & 0o777 if os.path.exists(path) else 0o644
         tmp = path + '.wisp-seed'
         with open(tmp, 'w', encoding='utf-8') as f: f.write(new)
         os.chmod(tmp, mode); os.replace(tmp, path)
-    print('wisp-steam-seed: default compatibility tool %s' % ({'seeded': 'set to ' + tool, 'upgraded': 'moved to ' + tool}.get(status, 'already chosen')))
+    print('wisp-steam-seed: default compatibility tool %s; UI scale %s' % ({'seeded': 'set to ' + tool, 'upgraded': 'moved to ' + tool}.get(status, 'already chosen'), 'seeded' if scale == 'seeded' else 'already chosen'))
     return 0
 
 

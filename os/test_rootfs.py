@@ -76,6 +76,15 @@ class BluetoothActivationTests(unittest.TestCase):
 
 
 class MemoryPolicyTests(unittest.TestCase):
+    def test_the_zram_cap_is_640_mib(self):
+        # Operator decision 2026-10-15: 640 MiB (was 450). Measured on the handheld the same day: at the 450 MiB cap an aged Steam session (a 453 MB download, an install script and a prefix creation in
+        # one session) filled zram to its limit, zram rejected about 8,500 swap-outs a second (`failed_writes`), reclaim kept picking pages it could not store, the file cache was squeezed to ~100 MB and
+        # the device crawled (docs/WISPOS-NOTES.md "Slowdown in the aged Steam session"); 560 MiB stopped the rejects. The disk size (2048 MiB) and the algorithm (lz4) are unchanged.
+        text = (HERE / 'rootfs/usr/bin/wisp-steam-session').read_text()
+        self.assertIn("printf '671088640\\n' >/sys/block/zram0/mem_limit", text)
+        self.assertEqual(671088640, 640 * 1024 * 1024)
+        self.assertNotIn('471859200', text, 'the old 450 MiB value must not be left behind')
+
     def test_the_session_sets_the_zram_friendly_vm_policy(self):
         text = (HERE / 'rootfs/usr/bin/wisp-steam-session').read_text()
         self.assertIn("printf '180\\n' >/proc/sys/vm/swappiness", text)
@@ -785,6 +794,16 @@ class StageRootfsTests(unittest.TestCase):
         self.assertEqual([l for l in code if 'package/beta' in l], [], 'the wrapper must not write Steam\'s beta (channel) file')
         self.assertEqual([l for l in code if '-clientbeta' in l], [], 'the wrapper must not override the channel for the session')
 
+    def test_steams_ui_is_told_it_runs_as_the_deck_session(self):
+        # Found on the handheld 2026-10-14/15 (docs/WISPOS-NOTES.md, "Power-menu/gamescope mechanism"): the Steam UI's power menu offers "Switch to Desktop" only when its
+        # IN_GAMESCOPE flag is set, and that flag is `Plat_IsGamescope()` = a non-empty GAMESCOPE_WAYLAND_DISPLAY in the client's environment (libtier0_s.so). Without it the
+        # desktop mode (journey 5) cannot be reached from the Steam UI at all; with it (a volatile drop-in on the device) the entry appeared and the switch worked.
+        session = (HERE / 'rootfs/usr/bin/wisp-steam-session').read_text()
+        code = [l for l in session.splitlines() if not l.lstrip().startswith('#')]
+        lines = [l for l in code if 'GAMESCOPE_WAYLAND_DISPLAY' in l]
+        self.assertEqual(len(lines), 1, 'exported exactly once, by the session wrapper')
+        self.assertRegex(lines[0], r'^export GAMESCOPE_WAYLAND_DISPLAY=\S+$', 'a non-empty value is all Steam checks')
+
     def test_the_default_display_is_the_panels_full_resolution(self):
         # Operator decision 2026-10-14 (release): no half-resolution mode; the panel runs at its own 720x480 (scale 1). Half resolution had been the default since 2026-10-09.
         kiosk = (HERE / 'rootfs/usr/share/sway/config.kiosk').read_text().splitlines()
@@ -904,6 +923,43 @@ class CheckRootfsTests(unittest.TestCase):
         target = configparser.ConfigParser(strict=False, interpolation=None); target.optionxform = str
         target.read(HERE / 'rootfs/usr/lib/systemd/system/wispos.target')
         self.assertEqual(target['Install']['Alias'].split(), ['default.target', 'rocknix.target'])
+
+    def test_steams_ui_scale_defaults_to_the_operators_choice_without_overriding_the_users(self):
+        # Operator decision 2026-10-15: the SteamOS UI scale default is "150 %"; he chose the 9-notch position (his own 2026-10-09 hand pick, ScaleFactor 0.842373907566070557 = 1.45 x Steam's
+        # auto value 0.5809 on this 720x480 panel; Steam's control shows no percentage). Verified on the handheld 2026-10-15 (notes "UI scale seed"): Steam stores a manual scale as a per-display
+        # block under InstallConfigStore/UI/display named "<display>|||<mode>" holding ScaleFactor, and mirrors it into display/Current; a seeded block alone started Steam normally and was applied.
+        import importlib.machinery, importlib.util, os, tempfile
+        path = str(HERE / 'rootfs/usr/bin/wisp-steam-seed')
+        spec = importlib.util.spec_from_loader('wisp_steam_seed2', importlib.machinery.SourceFileLoader('wisp_steam_seed2', path))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        self.assertEqual(m.UI_SCALE, '0.842373907566070557'); self.assertEqual(m.UI_SCALE_DISPLAY, 'External: DSI-1 3"|||Fullscreen-720x480')
+        block = '\t\t\t"External: DSI-1 3\\"|||Fullscreen-720x480"\n\t\t\t{\n\t\t\t\t"ScaleFactor"\t\t"0.842373907566070557"\n\t\t\t}\n'
+        def vdf(ui=''):
+            return '"InstallConfigStore"\n{\n\t"Software"\n\t{\n\t\t"Valve"\n\t\t{\n\t\t\t"Steam"\n\t\t\t{\n\t\t\t\t"Other"\t\t"1"\n\t\t\t}\n\t\t}\n\t}\n' + ui + '}\n'
+        current = ('\t"UI"\n\t{\n\t\t"display"\n\t\t{\n\t\t\t"Current"\n\t\t\t{\n\t\t\t\t"MinScaleFactor"\t\t"0.29"\n\t\t\t\t"name"\t\t"External: DSI-1 3\\"|||Fullscreen-720x480"\n'
+                   '\t\t\t\t"AutoScaleFactor"\t\t"0.5809"\n\t\t\t\t"ScaleFactor"\t\t"0.5809"\n\t\t\t}\n\t\t}\n\t}\n')
+        # no UI section at all (a fresh config): the whole UI/display/<block> is added, braces balance, and a second run changes nothing
+        text, status = m.seed_ui_scale(vdf())
+        self.assertEqual(status, 'seeded'); self.assertIn(block, text); self.assertEqual(text.count('{'), text.count('}')); self.assertEqual(m.seed_ui_scale(text), (text, 'present'))
+        self.assertIn('"Other"\t\t"1"', text)
+        # Steam's own Current block (auto) is left exactly as it is and does not count as a choice: the block is added beside it
+        text, status = m.seed_ui_scale(vdf(current))
+        self.assertEqual(status, 'seeded'); self.assertIn(current.split('\t\t\t"Current"')[1].split('\n\t\t}')[0], text); self.assertIn(block, text)
+        self.assertEqual(text.count('{'), text.count('}')); self.assertEqual(m.seed_ui_scale(text)[1], 'present')
+        # a display block of the user's own (any name, any value) is never replaced or added to
+        own = vdf('\t"UI"\n\t{\n\t\t"display"\n\t\t{\n\t\t\t"Internal: DSI-1 3\\""\n\t\t\t{\n\t\t\t\t"ScaleFactor"\t\t"1.1"\n\t\t\t}\n\t\t}\n\t}\n')
+        self.assertEqual(m.seed_ui_scale(own), (own, 'present'))
+        # a UI section without a display block gets one; junk is left alone
+        text, status = m.seed_ui_scale(vdf('\t"UI"\n\t{\n\t\t"Other"\t\t"x"\n\t}\n'))
+        self.assertEqual(status, 'seeded'); self.assertIn(block, text); self.assertEqual(text.count('{'), text.count('}'))
+        junk = '"Something"\n{\n}\n'
+        self.assertEqual(m.seed_ui_scale(junk), (junk, 'unrecognised'))
+        # the command seeds both the tool and the scale on a first start, and leaves a user's scale alone afterwards
+        d = Path(tempfile.mkdtemp(prefix='wispos-seed-ui-', dir=os.environ.get('TMPDIR'))); f = d / 'config' / 'config.vdf'
+        self.assertEqual(m.main([str(f)]), 0); first = f.read_text()
+        self.assertIn(block, first); self.assertIn('proton-stable', first); self.assertEqual(first.count('{'), first.count('}'))
+        edited = first.replace('"0.842373907566070557"', '"0.9"'); f.write_text(edited)
+        self.assertEqual(m.main([str(f)]), 0); self.assertEqual(f.read_text(), edited)
 
     def test_steam_defaults_to_the_arm64_proton_without_overriding_the_users_choice(self):
         # Worms Armageddon install, 2026-10-09: with no global default tool Steam queued the x86 Proton Experimental + FEX stack (about 2.2 GB) that cannot run here.

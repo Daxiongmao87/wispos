@@ -160,6 +160,20 @@ def install_dock(tree, binary):
     shutil.copyfile(HERE / 'dock/design/wallpaper.png', share / 'wallpaper.png'); (share / 'wallpaper.png').chmod(0o644)
 
 
+def install_mime_database(tree):
+    """The shared MIME database, generated from the tree's own /usr/share/mime/packages. The pinned ROCKNIX root ships the package XML but not the result, and gdk-pixbuf 2.42 needs the
+    result to recognise an image: without it swaybg logged "Couldn't recognize the image file format" and the desktop wallpaper was black (device, 2026-10-15)."""
+    mime = tree / 'usr/share/mime'
+    if not list((mime / 'packages').glob('*.xml')):
+        raise SystemExit(f'no MIME package XML under {mime}/packages to build the database from')
+    tool = shutil.which('update-mime-database')
+    if tool is None:
+        raise SystemExit('update-mime-database (shared-mime-info) is needed on the build host to generate the image\'s MIME database')
+    subprocess.run([tool, str(mime)], check=True, capture_output=True)
+    if not (mime / 'mime.cache').is_file():
+        raise SystemExit('update-mime-database ran but produced no mime.cache')
+
+
 def install_bootscreen(tree, binary):
     """The Wayland phase of the boot screen (os/splash/wisp-bootscreen.c); its unit comes with the overlay."""
     shutil.copyfile(binary, tree / 'usr/bin/wisp-bootscreen'); (tree / 'usr/bin/wisp-bootscreen').chmod(0o755)
@@ -345,6 +359,7 @@ def main(tree, kernel_out, mode='full'):
     install_ui_reclaim(tree, os.environ['WISP_UI_RECLAIM_BIN'])
     install_pad(tree, os.environ['WISP_PAD_BIN'])
     install_dock(tree, os.environ['WISP_DOCK_BIN'])
+    install_mime_database(tree)
     install_bootscreen(tree, os.environ['WISP_BOOTSCREEN_BIN'])
     install_usb_host_bench(tree)
     install_steam_installer(tree, os.environ['WISP_STEAM_DEBS'])

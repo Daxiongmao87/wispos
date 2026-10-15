@@ -127,6 +127,15 @@ class UnitTests(unittest.TestCase):
         env = (ROOT / 'usr/lib/systemd/system/wisp-dock.service').read_text()               # several Environment= lines: read them all
         for want in ('WAYLAND_DISPLAY=wayland-1', 'XDG_RUNTIME_DIR=/var/run/0-runtime-dir', 'SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock', 'MOZ_ENABLE_WAYLAND=1'): self.assertIn(want, env)
 
+    def test_programs_started_from_the_dock_get_a_locale_the_image_has(self):
+        """Device, 2026-10-15: the systemd manager's LANG=C.UTF-8 reached the dock and the terminal printed "foot: invalid locale, falling back to 'en_US.UTF-8'" on every start: the image
+        installs C, POSIX and en_US.UTF-8, not C.UTF-8. Games keep their own LANG from Steam; this is the desktop mode's only."""
+        text = (ROOT / 'usr/lib/systemd/system/wisp-dock.service').read_text()
+        lang = [l.split('LANG=', 1)[1].split()[0] for l in text.splitlines() if l.startswith('Environment=') and ' LANG=' in ' ' + l.split('=', 1)[1]]
+        self.assertEqual(lang, ['en_US.UTF-8'])
+        archive = WORK / 'rootfs/tree/usr/lib/locale/locale-archive'
+        if archive.is_file(): self.assertIn(b'en_US.utf8', archive.read_bytes(), 'the locale the unit names is in the staged image')
+
     def test_a_shell_that_cannot_stay_up_sends_the_device_back_to_game_mode(self):
         dock = unit('wisp-dock.service')
         self.assertEqual(dock['Unit']['OnFailure'], 'wisp-steam.service')
@@ -180,6 +189,36 @@ class DesktopEntryTests(unittest.TestCase):
             self.assertTrue(prog in ours or (tree / prog).exists() or (ROOT / 'usr/bin' / prog).exists(), '%s runs %s' % (name, prog))
             for word in d['Exec'].split()[1:]:
                 if not word.startswith('-') and word not in ('--ctl', 'qs', 'game'): self.assertTrue(word in ours or (tree / word).exists() or (ROOT / 'usr/bin' / word).exists(), '%s runs %s' % (name, word))
+
+
+class MimeDatabaseTests(unittest.TestCase):
+    """The wallpaper was black on the device (2026-10-15): swaybg logged "Couldn't recognize the image file format" because the image carried only /usr/share/mime/packages and
+    never the generated database, which this gdk-pixbuf (2.42) needs to recognise a PNG. The build must generate it, and must not ship a tree without it."""
+    PNG_XML = ('<?xml version="1.0"?><mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info"><mime-type type="image/png"><comment>PNG image</comment>'
+               '<magic priority="50"><match type="string" value="\\x89PNG" offset="0"/></magic><glob pattern="*.png"/></mime-type></mime-info>')
+
+    def setUp(self):
+        sys.path.insert(0, str(HERE))
+        import stage_rootfs
+        self.stage = stage_rootfs
+        self.tmp = tempfile.TemporaryDirectory(); self.tree = Path(self.tmp.name)
+    def tearDown(self): self.tmp.cleanup()
+
+    def test_the_tree_gets_a_generated_database_that_knows_png(self):
+        packages = self.tree / 'usr/share/mime/packages'; packages.mkdir(parents=True)
+        (packages / 'freedesktop.org.xml').write_text(self.PNG_XML)
+        self.stage.install_mime_database(self.tree)
+        cache = self.tree / 'usr/share/mime/mime.cache'
+        self.assertTrue(cache.is_file(), 'mime.cache is generated from the tree\'s own packages')
+        self.assertIn(b'image/png', cache.read_bytes())
+
+    def test_a_tree_with_nothing_to_build_it_from_fails_loudly(self):
+        (self.tree / 'usr/share/mime').mkdir(parents=True)
+        with self.assertRaises(SystemExit): self.stage.install_mime_database(self.tree)
+
+    def test_the_build_runs_it_and_the_check_demands_the_result(self):
+        self.assertIn('install_mime_database(tree)', (HERE / 'stage_rootfs.py').read_text().split('def main(')[1])
+        self.assertIn('usr/share/mime/mime.cache', (HERE / 'check_rootfs.py').read_text())
 
 
 class BuildWiringTests(unittest.TestCase):

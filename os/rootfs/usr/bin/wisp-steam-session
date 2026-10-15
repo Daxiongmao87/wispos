@@ -37,6 +37,9 @@ mkdir -p "$HOME/.steam/bin32"
 cmp -s /usr/lib/wispos/libwispos-ldadd.so "$HOME/.steam/bin32/gameoverlayrenderer.so" 2>/dev/null \
     || cp /usr/lib/wispos/libwispos-ldadd.so "$HOME/.steam/bin32/gameoverlayrenderer.so"
 export SDL_VIDEODRIVER=x11 STEAM_RUNTIME=1
+# Steam's UI decides it is "the Deck session" (power menu with "Switch to Desktop", the Deck-only settings) from a non-empty GAMESCOPE_WAYLAND_DISPLAY in its environment
+# (Plat_IsGamescope() in libtier0_s.so; docs/WISPOS-NOTES.md "Power-menu/gamescope mechanism"). Only the presence is read: there is no gamescope here and nothing listens on this name.
+export GAMESCOPE_WAYLAND_DISPLAY=gamescope-wisp
 # Game defaults, inherited by every game Steam starts (a game's own launch options still override them). This GPU has no Vulkan driver, so Direct3D goes
 # through WineD3D (OpenGL) instead of DXVK; and Wine's debug logging is OFF: tracing slowed BIT.TRIP RUNNER's load from about 2 minutes to many minutes
 # (docs/WISPOS-NOTES.md, game with tracing off). Never set PROTON_LOG or a WINEDEBUG other than -all here.
@@ -61,14 +64,15 @@ export LD_LIBRARY_PATH="/usr/lib/wispos/lib:$base/runtime/lib:$steam_root/steamr
 # No hardware Vulkan driver on this GPU; Steam's bundled software driver satisfies its GPU query.
 export VK_ICD_FILENAMES="$steam_root/steamrtarm64/vk_swiftshader_icd.json"
 
-# Compressed swap (2048 MiB lz4, compressed pages capped at 450 MiB of RAM; idempotent). Operator raised it from 768 MiB on 2026-10-09 after the install
-# exhausted the old swap; the sweet spot is still being measured (docs/WISPOS-NOTES.md).
+# Compressed swap (2048 MiB lz4, compressed pages capped at 640 MiB of RAM; idempotent). Operator raised it from 768 MiB on 2026-10-09 after the install
+# exhausted the old swap, and from 450 to 640 MiB on 2026-10-15: at 450 an aged Steam session filled zram to its cap and zram rejected ~8,500 swap-outs a second (docs/WISPOS-NOTES.md
+# "Slowdown in the aged Steam session"; 560 MiB stopped it).
 if ! grep -q '^/dev/zram0[[:space:]]' /proc/swaps; then
     modprobe zram num_devices=1 \
       && [ "$(cat /sys/block/zram0/disksize)" = 0 ] \
       && printf 'lz4\n' >/sys/block/zram0/comp_algorithm \
       && printf '2147483648\n' >/sys/block/zram0/disksize \
-      && printf '471859200\n' >/sys/block/zram0/mem_limit \
+      && printf '671088640\n' >/sys/block/zram0/mem_limit \
       && mkswap /dev/zram0 >/dev/null && swapon -p 200 /dev/zram0 \
       || say 'warning: zram swap setup failed'
 fi

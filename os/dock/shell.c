@@ -348,24 +348,14 @@ static RdColor glyph_ink(const char *g)
     return RD_RGB(WISP_UI_GLYPH);
 }
 
-static bool glyph_exists(const char *g)
-{
-    static const char *const known[] = { "apps", "browser", "terminal", "settings", "game", "images", "monitor", "about" };
-    for (size_t i = 0; i < sizeof known / sizeof *known; i++) if (!strcmp(g, known[i])) return true;
-    return false;
-}
-
 static IconSpec shell_icon(void *ctx, const WdApp *app, const char *key)
 {
     (void)ctx;
     IconSpec s = { 0 };
     if (!strcmp(key, "apps") || !strcmp(key, "game")) { s.glyph = key; s.ink = glyph_ink(key); return s; }
     if (app) {
-        if (!strncmp(app->icon, "wisp-", 5) && glyph_exists(app->icon + 5)) {              /* our own set: tinted masks */
-            static char names[8][24];
-            static int k;
-            char *g = names[k++ & 7];
-            snprintf(g, 24, "%s", app->icon + 5);
+        const char *g = wd_glyph_name(app->icon);                                          /* our own set: tinted masks */
+        if (g) {
             s.glyph = g;
             s.ink = glyph_ink(g);
             return s;

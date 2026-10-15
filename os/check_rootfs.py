@@ -132,6 +132,7 @@ BOOT_CONTRACT = [
     'usr/bin/autostart', 'usr/lib/systemd/system/rocknix-autostart.service', 'usr/lib/autostart/common/050-audio',
     'usr/lib/autostart/common/006-display', 'usr/lib/autostart/common/111-sway-init', 'usr/lib/autostart/quirks/platforms/H700',
     'etc/passwd', 'etc/shadow', 'etc/group', 'etc/os-release',
+    'usr/share/mime/mime.cache', 'usr/bin/wisp-images',
 ]
 
 

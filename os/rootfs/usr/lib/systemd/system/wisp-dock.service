@@ -13,6 +13,8 @@ OnFailure=wisp-steam.service
 [Service]
 Environment=HOME=/storage/wispos/home XDG_RUNTIME_DIR=/var/run/0-runtime-dir WAYLAND_DISPLAY=wayland-1 SWAYSOCK=/var/run/0-runtime-dir/sway-ipc.0.sock
 Environment=XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=WispOS:sway MOZ_ENABLE_WAYLAND=1
+# The manager's LANG=C.UTF-8 is not a locale this image installs (it has C, POSIX, en_US.UTF-8); programs started from the dock would warn about it (foot does on every start).
+Environment=LANG=en_US.UTF-8
 ExecStartPre=/usr/bin/mkdir -p /storage/wispos/home /storage/downloads
 ExecStart=/usr/bin/wisp-dock
 Restart=on-failure

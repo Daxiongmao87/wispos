@@ -7,18 +7,34 @@
 
 # WispOS
 
+> **Project Status: Proof of Concept**  
+> WispOS is currently in the **proof of concept** stage. It is an experimental appliance prototype demonstrating Steam's gamepad UI, compatibility tools, and game execution on the Anbernic RG34XX-SP. While core boot, setup, desktop mode, signed OTA updates, and game launches have been proven on physical hardware, this is an active prototype and not a finished consumer release.
+
+<p align="center">
+  <img src="docs/brand/wispos-device-spotlight.png" alt="WispOS running Steam's gamepad UI on the Anbernic RG34XX-SP" width="560">
+  <br>
+  <em>WispOS running Steam's gamepad UI on the Anbernic RG34XX-SP</em>
+</p>
+
 A single-purpose operating system for the **Anbernic RG34XX-SP** handheld (Allwinner H700, four Cortex-A53 cores, 1 GiB of RAM, a 720x480 panel): it boots into Steam's gamepad UI
 and then into the games you launch from your library, and does nothing else. Steam and its games run through the stock, unmodified compatibility layers (FEX-Emu and Proton for
 ARM64). The goal is *general* compatibility of older Steam titles (1990s first, then pre-2005) through a strong core system, never fixes for one particular game.
 
-WispOS is **work in progress, not a release**. Nothing here has been published as a finished image yet.
+## Custom System Implementations
+
+Around Steam's Big Picture Mode and SteamOS gamepad UI, WispOS provides custom, lightweight core implementations engineered for the tight memory and display constraints of the Allwinner H700:
+
+| First-Time Setup (`wisp-setup`) | Desktop Shell (`wisp-dock` & `wisp-pad`) |
+| :---: | :---: |
+| <img src="docs/brand/wispos-setup-screen.jpg" width="400" alt="First-Time Setup on RG34XX-SP"> | <img src="docs/brand/wispos-desktop-screen.png" width="400" alt="Desktop Mode on RG34XX-SP"> |
+| **First-Run Provisioning**: Gamepad-driven Wi-Fi connection, network verification, and live-progress Steam package downloads. | **Dedicated Desktop Mode**: Custom layer-shell dock, application launcher, virtual gamepad pointer/keyboard, and seamless switching to/from Steam Game Mode. |
 
 ## What is in this repository
 | Path | What it is |
 | --- | --- |
 | `os/` | The OS image build: kernel/U-Boot/initramfs scripts (`os/boot/`), the root file system overlay and its build (`os/rootfs/`, `os/build-rootfs.sh`, `os/stage_rootfs.py`), the card image (`os/build-image.sh`), the first-time setup screen (`os/setup/`), the boot splash (`os/splash/`), the shared UI tokens (`os/ui/`), the SteamOS-compatibility daemon and update helper (`os/steamos/`), the Steam UI memory ceiling (`os/reclaim/`), the release tool (`os/make-release.py`) and development tooling (`os/dev/`) |
 | `steam/` | Pinned inputs the build verifies by hash (lock files) and the small helpers around Steam's native ARM64 client |
-| `docs/brand/` | The logo and the script that draws it |
+| `docs/brand/` | The logo, brand assets, and device hardware showcase captures |
 | `CHANGELOG.md` | The change ledger |
 
 The change ledger mentions scripts, layers and documents from earlier stages of the project, or the author's own workflow tooling, that are not part of this repository; those references are history, not missing files.

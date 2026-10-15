@@ -131,6 +131,28 @@ static void spinner(int cx, int cy, int r, float t) {
         disc(cx + (int)lroundf(sinf(a) * r), cy - (int)lroundf(cosf(a) * r), 3, (SDL_Color)WISP_SDL_COLOR_A(WISP_UI_ACCENT, (Uint8)(255 - age * WISP_UI_SPIN_FADE)));
     }
 }
+/* One anti-aliased round dot of diameter d centred at (cx, cy) in continuous coordinates (pixel (x, y) covers [x, x+1) and has its centre at x + 0.5): each pixel's alpha is the colour's
+ * alpha times its coverage, 1 inside, 0 outside, a linear ramp one pixel wide across the edge. disc() draws only even sizes, so the locked 9 px dots need this. */
+static void aa_dot(float cx, float cy, float d, SDL_Color c) {
+    float r = d / 2;
+    for (int y = (int)floorf(cy - r - 1); y <= (int)ceilf(cy + r + 1); y++)
+        for (int x = (int)floorf(cx - r - 1); x <= (int)ceilf(cx + r + 1); x++) {
+            float cov = r - hypotf(x + 0.5f - cx, y + 0.5f - cy) + 0.5f;
+            if (cov <= 0) continue;
+            if (cov > 1) cov = 1;
+            SDL_SetRenderDrawColor(R, c.r, c.g, c.b, (Uint8)lroundf(c.a * cov));
+            SDL_RenderDrawPoint(R, x, y);
+        }
+}
+/* The large spinner of the Steam download screen (LOCKED, docs/WISPOS-UI-LANGUAGE.md "Large spinner"): the same ring of 12 dots, head, fade and speed as spinner(), at the tokens' size. */
+static void spinner_big(float t) {
+    SDL_SetRenderDrawBlendMode(R, SDL_BLENDMODE_BLEND);
+    for (int i = 0; i < WISP_UI_SPIN_DOTS; i++) {
+        float a = i * 2 * (float)M_PI / WISP_UI_SPIN_DOTS, age = fmodf(t * WISP_UI_SPIN_SPEED - i + 2 * WISP_UI_SPIN_DOTS, WISP_UI_SPIN_DOTS) / WISP_UI_SPIN_DOTS;   /* 0 = head, 1 = tail */
+        aa_dot(WISP_UI_SPIN_BIG_CX + sinf(a) * WISP_UI_SPIN_BIG_R, WISP_UI_SPIN_BIG_CY - cosf(a) * WISP_UI_SPIN_BIG_R, WISP_UI_SPIN_BIG_DOT_D,
+               (SDL_Color)WISP_SDL_COLOR_A(WISP_UI_ACCENT, (Uint8)(255 - age * WISP_UI_SPIN_FADE)));
+    }
+}
 static void hint(int x, int y, const char *key, const char *label, int *advance) {
     int kw = 0, kh = 0, tw = 0, th = 0;
     TTF_SizeUTF8(F_TINY, key, &kw, &kh); TTF_SizeUTF8(F_TINY, label, &tw, &th);
@@ -277,17 +299,17 @@ static void screen_download(App *a) {
     int extract = !strcmp(a->phase, "extract");
     panel_title(extract ? "Unpacking Steam" : !strcmp(a->phase, "finish") ? "Almost there" : "Downloading Steam",
                 extract ? "This might take a while. Please don't turn the device off." : unpack ? "Nearly done. Please don't turn the device off." : "This happens once, and can take a few minutes.");
-    int y = 170, bw = PANEL_W;
-    rrect(PANEL_X, y, bw, 12, RAD, C_LINE);
+    int y = 170, bx = WISP_UI_PROGRESS_X, bw = WISP_UI_PROGRESS_W;                       /* the spinner takes the panel's left 47 px + 14 px gap, in every phase */
+    spinner_big(a->t);
+    rrect(bx, y, bw, 12, RAD, C_LINE);
     int fw = (int)(bw * a->progress);                       /* fill: Steam's focus gradient #47bfff -> #1a44c2 over 60% */
     for (int xx = 0; xx < fw; xx++) {
         float k = (float)xx / (0.6f * bw); if (k > 1) k = 1;
         SDL_SetRenderDrawColor(R, WISP_R(WISP_UI_BAR_FROM) + (WISP_R(WISP_UI_BAR_TO) - WISP_R(WISP_UI_BAR_FROM)) * k, WISP_G(WISP_UI_BAR_FROM) + (WISP_G(WISP_UI_BAR_TO) - WISP_G(WISP_UI_BAR_FROM)) * k, WISP_B(WISP_UI_BAR_FROM) + (WISP_B(WISP_UI_BAR_TO) - WISP_B(WISP_UI_BAR_FROM)) * k, 255);
-        SDL_RenderDrawLine(R, PANEL_X + xx, y, PANEL_X + xx, y + 11);
+        SDL_RenderDrawLine(R, bx + xx, y, bx + xx, y + 11);
     }
-    char s[80]; snprintf(s, sizeof s, "%d%%", (int)(a->progress * 100)); text(F_BODY, s, PANEL_X, y + 26, C_TEXT, 0, 0);
-    if (!unpack || (extract && a->total_mb > 0)) { snprintf(s, sizeof s, "%ld of %ld MB", a->done_mb, a->total_mb); text(F_SMALL, s, PANEL_X + bw, y + 30, C_DIM, 2, 0); }
-    if (unpack) spinner(PANEL_X + 100, y + 36, 10, a->t);                                 /* beside the percentage: the step is alive */
+    char s[80]; snprintf(s, sizeof s, "%d%%", (int)(a->progress * 100)); text(F_BODY, s, bx, y + 26, C_TEXT, 0, 0);
+    if (!unpack || (extract && a->total_mb > 0)) { snprintf(s, sizeof s, "%ld of %ld MB", a->done_mb, a->total_mb); text(F_SMALL, s, PANEL_X + PANEL_W, y + 30, C_DIM, 2, 0); }
     if (extract) text(F_SMALL, "Writing Steam and its compatibility tool to the card.", PANEL_X, 262, C_DIM, 0, PANEL_W);
     text(F_SMALL, "Then you'll sign in to your Steam account.", PANEL_X, 300, C_DIM, 0, PANEL_W);
     check_icon(PANEL_X + 8, 372, C_OK); { char l[120]; snprintf(l, sizeof l, "Online via %s", a->ssid); text(F_SMALL, l, PANEL_X + 30, 362, C_DIM, 0, PANEL_W - 30); }
