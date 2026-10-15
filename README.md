@@ -1,20 +1,11 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wispos-badge-dark.png">
-    <img src="docs/brand/wispos-badge-light.png" alt="WispOS" width="160">
-  </picture>
+  <img src="docs/brand/wispos-device-spotlight.png" alt="WispOS running Steam's gamepad UI on the Anbernic RG34XX-SP" width="560">
 </p>
 
 # WispOS
 
 > **Project Status: Proof of Concept**  
 > WispOS is currently in the **proof of concept** stage. It is an experimental appliance prototype demonstrating Steam's gamepad UI, compatibility tools, and game execution on the Anbernic RG34XX-SP. While core boot, setup, desktop mode, signed OTA updates, and game launches have been proven on physical hardware, this is an active prototype and not a finished consumer release.
-
-<p align="center">
-  <img src="docs/brand/wispos-device-spotlight.png" alt="WispOS running Steam's gamepad UI on the Anbernic RG34XX-SP" width="560">
-  <br>
-  <em>WispOS running Steam's gamepad UI on the Anbernic RG34XX-SP</em>
-</p>
 
 A single-purpose operating system for the **Anbernic RG34XX-SP** handheld (Allwinner H700, four Cortex-A53 cores, 1 GiB of RAM, a 720x480 panel): it boots into Steam's gamepad UI
 and then into the games you launch from your library, and does nothing else. Steam and its games run through the stock, unmodified compatibility layers (FEX-Emu and Proton for
