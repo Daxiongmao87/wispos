@@ -61,4 +61,16 @@ if [ -e "$CONF/ssh" ] && [ ! -e /storage/.config/wispos/ssh-seeded ]; then
     mkdir -p /storage/.config/wispos && : > /storage/.config/wispos/ssh-enabled && : > /storage/.config/wispos/ssh-seeded
     say "SSH turned on by the ssh file on the boot partition (first boot only)"
 fi
+
+# Heal a stale dirty bit in the FAT backup boot sector. The first-boot serial
+# regeneration used to tattoo it (see usr/lib/wispos/wisp-fat-backup-heal), and
+# cards flashed before that fix still carry the scar: every boot's fsck then
+# reports "differences between boot sector and its backup". The heal is a no-op
+# on clean volumes and never touches a dirty primary; without a /flash device
+# (tests) it does nothing.
+heal=${WISP_FAT_BACKUP_HEAL:-/usr/lib/wispos/wisp-fat-backup-heal}
+flash_dev=${WISP_FLASH_DEV:-$(grep " /flash " /proc/mounts 2>/dev/null | cut -d' ' -f1 | head -n1)}
+if [ -n "$flash_dev" ] && [ -x "$heal" ]; then
+    "$heal" "$flash_dev" 2>/dev/null || true
+fi
 exit 0

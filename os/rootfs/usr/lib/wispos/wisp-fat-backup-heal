@@ -1,0 +1,48 @@
+#!/bin/sh
+# wisp-fat-backup-heal — clear a stale dirty bit in a FAT backup boot sector.
+#
+# BACKGROUND: dosfstools' `fatlabel -i -r` regenerates the volume serial and, in
+# doing so, syncs the whole primary boot sector — including a set dirty bit at
+# offset 0x41 — into the backup boot sector (sector 6). The first-boot resizer
+# runs it while /flash is mounted read-write (dirty by design), so the backup
+# inherits 0x41=01; a later clean unmount clears only the primary, leaving a
+# permanent 00/01 scar that every boot's fsck.fat reports as "differences
+# between boot sector and its backup". The primary is authoritative: a reserved
+# byte that reads 00 there must read 00 in the backup too.
+#
+# Usage: wisp-fat-backup-heal [--force] DEVICE-OR-IMAGE
+#   Default mode clears the backup byte only when the primary is clean (00):
+#   a dirty primary is never second-guessed — the next fsck clears it itself.
+#   --force clears the backup regardless; only the first-boot resizer uses it,
+#   right after the serial regeneration, while the volume is knowingly dirty.
+# Always exits 0 and touches exactly one byte (backup sector offset 0x41).
+set -u
+
+prog=wisp-fat-backup-heal
+force=0
+if [ "${1:-}" = "--force" ]; then force=1; shift; fi
+dev=${1:-}
+
+if [ -z "$dev" ] || { [ ! -b "$dev" ] && [ ! -f "$dev" ]; }; then
+  echo "$prog: no block device or image at '${dev:-(empty)}' — nothing to do"
+  exit 0
+fi
+# Primary dirty byte at 0x41 (byte 65); backup boot sector lives at sector 6.
+prim=$(dd if="$dev" bs=1 skip=65 count=1 2>/dev/null | od -An -tu1 2>/dev/null | tr -d ' \n')
+back=$(dd if="$dev" bs=1 skip=3137 count=1 2>/dev/null | od -An -tu1 2>/dev/null | tr -d ' \n')
+case "$prim$back" in ''|*[!0-9]*) echo "$prog: cannot read $dev — nothing to do"; exit 0;; esac
+
+if [ "$back" = 0 ]; then
+  echo "$prog: $dev backup boot sector already clean — nothing to do"
+  exit 0
+fi
+if [ "$force" = 0 ] && [ "$prim" != 0 ]; then
+  echo "$prog: $dev primary is dirty ($prim) — leaving the backup alone for the next fsck"
+  exit 0
+fi
+if printf '\0' | dd of="$dev" bs=1 seek=3137 count=1 conv=notrunc 2>/dev/null; then
+  echo "$prog: $dev backup boot-sector dirty byte cleared (was $back)"
+else
+  echo "$prog: $dev backup boot-sector write failed — nothing changed"
+fi
+exit 0
