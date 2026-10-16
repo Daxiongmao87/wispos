@@ -6,6 +6,11 @@ policy in `AGENTS.md`.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-16
+
+- **OTA manifest URL follows the repo to `WispOS-Project/wispos` (change, PATCH; the public repo transferred orgs 2026-10-16):** `os/steamos/update-source.json` names the new path; the old URL redirects and the updater follows redirects, so field devices survive the move. No release is published behind the new URL yet.
+- **`wisp` acts as root through conventional `sudo`, no password (feature, MINOR; operator decision 2026-10-16, "dont chane the name to root, give it root/sudo"):** the account kept its name, uid 1000 and public `wisp`/`wisp` login; `wheel` membership alone granted nothing because the image shipped no sudo, PAM or polkit at all, and `root` stays key-only so the release gate on a passwordless root is untouched. `os/sudo.lock.json` pins noble-arm64 `sudo` plus its five libraries (hash-verified against the Ubuntu index); `build-rootfs.sh` fetches them through the same channel as the Steam libraries; `stage_rootfs.install_sudo` unpacks them, writes `etc/sudoers.d/wisp` (`wisp ALL=(ALL:ALL) NOPASSWD: ALL`, mode 0440) and a permit-only `etc/pam.d/sudo` (the package's own names Debian's common-* stacks, which the image does not ship), and sets the setuid bit; `check_rootfs.py` requires `usr/bin/sudo` and both config files. Regression tests `os/test_sudo.py` (4: install lands, tamper refused, wrong arch refused, lock pins). Residual risk: the six packages add roughly 5 MB to SYSTEM; proven on QEMU before any release.
+
 ## [0.1.0] - 2026-10-15
 
 ### Added

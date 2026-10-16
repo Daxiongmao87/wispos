@@ -15,13 +15,13 @@
 # WISP_QEMU_SMP / WISP_QEMU_MEM (default 4 / 1024, the handheld's) give the emulator more to work with: Steam's UI stalls past its own 15 s main-loop assert on an emulated A53, so bringing
 # it up here takes more than the handheld has. WISP_QEMU_APPEND adds kernel arguments (for example systemd.mask=wisp-steam.service to start the session by hand).
 #
-# Same generic-arm64 test machine as qemu-test.sh (test-only virtio kernel, snapshot disk, SSH on localhost:$WISP_QEMU_SSH_PORT, default 2222). It is
+# Same generic-arm64 test machine as qemu-test.sh (test-only virtio kernel, snapshot disk, SSH on localhost:$WISP_QEMU_SSH_PORT, default 2229). It is
 # for exercising userspace, e.g. SDL programs with a dummy video driver, without the handheld.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=${WISP_WORK:-/mnt/hdd/wispos-staging/wispos-os-20261007}
 D=$WORK/qemu-boot; PIDF=$D/vm.pid; KEY=${WISP_VM_KEY:-$D/test-key}
-PORT=${WISP_QEMU_SSH_PORT:-2222}
+PORT=${WISP_QEMU_SSH_PORT:-2229}
 SSHO=(-p "$PORT" -i "$KEY" -o IdentitiesOnly=yes -o PasswordAuthentication=no -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
 case "${1:-}" in
   start)

@@ -1,7 +1,7 @@
 {
   "project": "steam34-appliance",
   "lockfile_version": 1,
-  "version": "0.1.0",
-  "build_id": "20261016.2",
+  "version": "0.2.0",
+  "build_id": "20261016.3",
   "note": "The authoritative version of the OS image (AGENTS.md, Versioning and changelog). `version` is stamped into /etc/os-release (WISPOS_VERSION, VERSION_ID) by os/stage_rootfs.py; `build_id` (YYYYMMDD.N, one per image build, comparable) is stamped as BUILD_ID and is what the update scheme compares (docs/WISPOS-UPDATE-DESIGN.md). Change them here and nowhere else; docs/RELEASING.md says when."
 }

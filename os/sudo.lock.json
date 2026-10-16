@@ -1,0 +1,62 @@
+{
+ "schema": 1,
+ "purpose": "sudo and the libraries its binary needs: the device owner's way to act as root (wisp, NOPASSWD, sudoers.d drop-in). Noble arm64, hash-pinned like steam/native-libs.lock.json.",
+ "packages": [
+  {
+   "package": "libapparmor1",
+   "version": "4.0.1really4.0.1-0ubuntu0.24.04.9",
+   "architecture": "arm64",
+   "sha256": "4af41833a547112a434bf5f9f83ca9607f8b1cd981197e5b2b14e5bf4c58b820",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/a/apparmor/libapparmor1_4.0.1really4.0.1-0ubuntu0.24.04.9_arm64.deb"
+  },
+  {
+   "package": "libaudit1",
+   "version": "1:3.1.2-2.1ubuntu0.1",
+   "architecture": "arm64",
+   "sha256": "0230419be4e85736d7bb45f981f08d1eb62cd9c37f386bccec6d6a42a882a56d",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/a/audit/libaudit1_3.1.2-2.1ubuntu0.1_arm64.deb"
+  },
+  {
+   "package": "libpam-modules",
+   "version": "1.5.3-5ubuntu5.7",
+   "architecture": "arm64",
+   "sha256": "65c9f9f35135778db47b2fb811bb2a3528e67343d392fdd8ab021d9debf5460b",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/p/pam/libpam-modules_1.5.3-5ubuntu5.7_arm64.deb"
+  },
+  {
+   "package": "libpam0g",
+   "version": "1.5.3-5ubuntu5.7",
+   "architecture": "arm64",
+   "sha256": "00c9618121e9b040748db3b1ad2e42c08898c567044a7f6ccde3627e3650588c",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/p/pam/libpam0g_1.5.3-5ubuntu5.7_arm64.deb"
+  },
+  {
+   "package": "libselinux1",
+   "version": "3.5-2ubuntu2.1",
+   "architecture": "arm64",
+   "sha256": "56630c4f009754e76808bf755072e634f8785a4dfbc8b1445213149e682f1502",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libs/libselinux/libselinux1_3.5-2ubuntu2.1_arm64.deb"
+  },
+  {
+   "package": "sudo",
+   "version": "1:1.9.15p5-3ubuntu5.24.04.4",
+   "architecture": "arm64",
+   "sha256": "e42a9bce73cbe70b287661738f4bcc365cad1243e8d127412ba751471c928d3d",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/s/sudo/sudo_1.9.15p5-3ubuntu5.24.04.4_arm64.deb"
+  },
+  {
+   "package": "libcap-ng0",
+   "version": "0.8.4-2build2",
+   "architecture": "arm64",
+   "sha256": "ffaaedcfab1d1cc48997f09e88b6664f2cc7cba1c7e15bf1078084f512697d4d",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/libc/libcap-ng/libcap-ng0_0.8.4-2build2_arm64.deb"
+  },
+  {
+   "package": "libpcre2-8-0",
+   "version": "10.42-4ubuntu2.1",
+   "architecture": "arm64",
+   "sha256": "7581764969752953aa1f991ce143bea594d2c5d0c36c2cc98c3c614c172aba93",
+   "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/p/pcre2/libpcre2-8-0_10.42-4ubuntu2.1_arm64.deb"
+  }
+ ]
+}

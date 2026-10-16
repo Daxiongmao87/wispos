@@ -192,6 +192,117 @@ def install_ui_reclaim(tree, binary):
 STEAM_LIB_PACKAGES = ('libibus-1.0-5', 'libasyncns0', 'libbrotli1', 'libssh2-1t64', 'libva2', 'libvdpau1')
 
 
+# sudo and its libraries (os/sudo.lock.json, noble arm64, hash-pinned): the device
+# owner's way to act as root. The image carries no PAM, polkit or sudo of its
+# own, and `wheel` membership alone grants nothing; this installs the standard
+# tool instead of a bespoke helper. `wisp` runs anything with no password
+# (sudoers.d drop-in, SteamOS-deck style); root itself stays key-only, so the
+# release gate on a passwordless root is untouched.
+SUDOERS_WISP = 'wisp ALL=(ALL:ALL) NOPASSWD: ALL\n'
+# The package's own /etc/pam.d/sudo names Debian's common-* stacks (libpam-runtime
+# config the image does not ship), so it is replaced with a permit stack: the
+# sudoers rule above is the whole policy, PAM authenticates nothing.
+PAM_SUDO = ('auth sufficient pam_permit.so\n'
+            'account sufficient pam_permit.so\n'
+            'password sufficient pam_permit.so\n'
+            'session required pam_permit.so\n')
+SUDO_SKIP_PREFIXES = ('usr/share/doc/', 'usr/share/man/')
+# Exact paths skipped: the package masks its own unit with a symlink to
+# /dev/null (standard Debian practice); the safety extractor refuses absolute
+# links, and dropping the mask changes nothing because no sudo.service file
+# ships either way.
+SUDO_SKIP_EXACT = ('usr/lib/systemd/system/sudo.service',)
+# Only these runtime sonames come out of the library packages, flattened into
+# usr/lib (the tree's own convention, a real loader path, and a directory the
+# rootfs gate already searches). Everything else a lib deb carries (unused PAM
+# modules, helper libs nothing references) stays out.
+SUDO_LIB_SONAMES = ('libpam.so.0', 'libaudit.so.1', 'libselinux.so.1',
+                    'libapparmor.so.1', 'libcap-ng.so.0', 'libpcre2-8.so.0')
+# The only PAM module the permit stack names; it must stay at the module path.
+SUDO_PAM_MODULES = ('pam_permit.so',)
+
+
+def sudo_dest(name, rel):
+    """Where one archive member lands in the tree, or None to leave it out."""
+    s = str(rel)
+    if any(s.startswith(p) for p in SUDO_SKIP_PREFIXES):
+        return None
+    if s in SUDO_SKIP_EXACT:
+        return None
+    if name == 'sudo':
+        if '/security/' in s and Path(s).name not in SUDO_PAM_MODULES:
+            return None
+        return rel
+    base = Path(s).name
+    if '/security/' in s and base in SUDO_PAM_MODULES:
+        return rel
+    if any(base == son or base.startswith(son + '.') for son in SUDO_LIB_SONAMES):
+        return Path('usr/lib') / base
+    return None
+
+
+def drop_sudo_masks(data):
+    """The data.tar of a package minus its unit-mask symlinks (SUDO_SKIP_EXACT):
+    anything else, safe or not, passes through untouched for the strict
+    extractor to judge. A skip entry pointing anywhere but /dev/null is kept,
+    so a hijacked mask still raises."""
+    import io
+    import tarfile
+    src = tarfile.open(fileobj=io.BytesIO(data), mode='r:*')
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode='w') as dst:
+        for member in src.getmembers():
+            name = member.name.removeprefix('./')
+            if (member.issym() and name in SUDO_SKIP_EXACT
+                    and member.linkname == '/dev/null'):
+                continue
+            f = src.extractfile(member) if member.isfile() else None
+            dst.addfile(member, f)
+    return out.getvalue()
+
+
+def install_sudo(tree, debs_dir, lock_path=None):
+    """Unpack the pinned sudo packages into the tree and wire the wisp rule."""
+    import importlib.util
+    tree = Path(tree)
+    lock = Path(lock_path) if lock_path else HERE / 'sudo.lock.json'
+    packages = {x['package']: x for x in json.loads(lock.read_text())['packages']}
+    spec = importlib.util.spec_from_file_location('native_libs', HERE.parent / 'steam' / 'native-libs.py')
+    native_libs = importlib.util.module_from_spec(spec); spec.loader.exec_module(native_libs)
+    for name, entry in packages.items():
+        deb = Path(debs_dir) / entry['url'].rsplit('/', 1)[1]
+        if hashlib.sha256(deb.read_bytes()).hexdigest() != entry['sha256']:
+            raise SystemExit(f'{name} package does not match the lock')
+        if subprocess.run(['dpkg-deb', '-f', str(deb), 'Architecture'], capture_output=True, text=True, check=True).stdout.strip() != 'arm64':
+            raise SystemExit(f'{name} package is not arm64')
+        raw = subprocess.run(['dpkg-deb', '--fsys-tarfile', str(deb)], capture_output=True, check=True).stdout
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as scratch:
+            scratch = Path(scratch); native_libs.extract(scratch, drop_sudo_masks(raw))
+            for src in sorted(scratch.rglob('*')):
+                rel = src.relative_to(scratch)
+                if src.is_dir():
+                    continue
+                dest_rel = sudo_dest(name, rel)
+                if dest_rel is None:
+                    continue
+                dest = tree / dest_rel
+                if src.is_symlink():
+                    if dest.is_symlink() or dest.exists():
+                        dest.unlink()
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.symlink_to(os.readlink(src))
+                elif src.is_dir():
+                    dest.mkdir(parents=True, exist_ok=True)
+                elif src.is_file():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(src, dest); shutil.copymode(src, dest)
+    sudoers_d = tree / 'etc/sudoers.d'; sudoers_d.mkdir(parents=True, exist_ok=True)
+    (sudoers_d / 'wisp').write_text(SUDOERS_WISP); (sudoers_d / 'wisp').chmod(0o440)
+    pam_d = tree / 'etc/pam.d'; pam_d.mkdir(parents=True, exist_ok=True)
+    (pam_d / 'sudo').write_text(PAM_SUDO); (pam_d / 'sudo').chmod(0o644)
+    (tree / 'usr/bin/sudo').chmod(0o4755)
+
+
 def install_usb_host_bench(tree):
     """The record that USB host mode passed its bench tests (docs/WISPOS-OS-DESIGN.md, spike S-USB). Operator rule, 2026-10-11: the host toggle ships in a release only after the bench
     test (an OTG adapter, external power appearing, 10 plug cycles, a USB-C meter) passed and its result is written in that document. WISP_USB_HOST_BENCH names the record (one line, e.g.
@@ -363,6 +474,7 @@ def main(tree, kernel_out, mode='full'):
     install_bootscreen(tree, os.environ['WISP_BOOTSCREEN_BIN'])
     install_usb_host_bench(tree)
     install_steam_installer(tree, os.environ['WISP_STEAM_DEBS'])
+    install_sudo(tree, os.environ['WISP_SUDO_DEBS'])
     install_official_fex(tree, os.environ['WISP_OFFICIAL_FEX_DEB'])
     install_sway_default_config(tree)
     if os.environ.get('WISP_DEV') == '1':

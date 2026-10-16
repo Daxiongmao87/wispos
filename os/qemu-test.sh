@@ -5,13 +5,13 @@
 #
 # Uses the test-only kernel from boot/build-qemu-kernel.sh with the real initramfs, SYSTEM image and
 # partitions (the image is opened with snapshot=on, so it is never modified). Waits for SSH on
-# localhost:2222, logs in with the baked SSH key as root and with the default wisp password, and
+# localhost:2229, logs in with the baked SSH key as root and with the default wisp password, and
 # prints what it finds. Exit status is non-zero if any check fails. This is emulation of a generic
 # arm64 machine: it proves the userspace boot flow, not the H700 hardware.
 set -uo pipefail
 WORK=${1:-/mnt/hdd/wispos-staging/wispos-os-20261007}
 case "$WORK" in /mnt/hdd/*) ;; *) echo "work directory must be on the HDD" >&2; exit 2 ;; esac
-PORT=${WISP_QEMU_SSH_PORT:-2222}      # host port forwarded to the guest's sshd (other things on the host may hold 2222)
+PORT=${WISP_QEMU_SSH_PORT:-2229}      # host port forwarded to the guest's sshd (2222 is held by other work on this host; seen 2026-10-12 and 2026-10-16)
 HERE=$(cd "$(dirname "$0")" && pwd); IMG=$WORK/out/qemu/test-image.img; KERNEL=$WORK/out/qemu/Image; D=$WORK/qemu-boot; LOG=$D/serial.log
 [ -f "$KERNEL" ] || { echo "need $KERNEL (os/boot/build-qemu-kernel.sh)" >&2; exit 1; }
 mkdir -p "$D" "$WORK/tmp"; export TMPDIR=$WORK/tmp; : >"$LOG"

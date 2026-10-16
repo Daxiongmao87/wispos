@@ -85,6 +85,11 @@ if [ -z "$VARIANT" ]; then
     mkdir -p "$DL/steam-debs"
     while read -r DEB_URL DEB_SHA; do sdl_fetch "steam-debs/${DEB_URL##*/}" "$DEB_URL" "$DEB_SHA"; done <<<"$STEAM_PACKAGES"
     export WISP_STEAM_DEBS=$DL/steam-debs
+    # sudo and the libraries its binary needs (os/sudo.lock.json): the device owner's way to act as root. Same fetch-and-pin channel as the Steam libraries.
+    SUDO_PACKAGES=$(python3 -I -c 'import json,sys; [print(x["url"], x["sha256"]) for x in json.load(open(sys.argv[1]))["packages"]]' "$HERE/sudo.lock.json")
+    mkdir -p "$DL/sudo-debs"
+    while read -r DEB_URL DEB_SHA; do sdl_fetch "sudo-debs/${DEB_URL##*/}" "$DEB_URL" "$DEB_SHA"; done <<<"$SUDO_PACKAGES"
+    export WISP_SUDO_DEBS=$DL/sudo-debs
     # The FEX project's own Windows modules (steam/official-fex.lock.json): fetched from the upstream package pool, hash-pinned, baked into the image unmodified.
     OFFICIAL_FEX=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["url"], d["sha256"])' "$HERE/../steam/official-fex.lock.json")
     read -r OFFICIAL_URL OFFICIAL_SHA <<<"$OFFICIAL_FEX"
