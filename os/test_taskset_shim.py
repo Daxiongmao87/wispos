@@ -2,7 +2,7 @@
 
 Valve's steamwebhelper.sh ends in `exec taskset 0x7c $(pwd)/steamwebhelper "$@"`; editing that file makes Steam re-extract its package (CRC check, measured 2026-10-14), so WispOS leaves it alone and
 answers the `taskset` call instead. What is proved, with the REAL util-linux taskset of this host behind the shim and a stand-in web helper that records what it was started with: the helper runs on
-cores 0-3 (not Valve's 2-6 mask) with the three Chromium switches in front of Steam's own arguments, which arrive unchanged and in order; every other taskset use passes straight through (a game's own
+cores 0-3 (not Valve's 2-6 mask) with the spike-measured Chromium switches (low-end device mode, software rasterisation, no back-forward cache) in front of Steam's own arguments, which arrive unchanged and in order; every other taskset use passes straight through (a game's own
 launch option, `taskset -p`); the session puts the shim first on PATH and does not edit Valve's file; the unit/rootfs wiring is in place. Mutants (each rule changed in turn) must all be caught.
 The stand-in wrapper below keeps Valve's `cd`, DISPLAY and exec lines verbatim; the real file is checked on the device (docs/WISPOS-NOTES.md 2026-10-14)."""
 import os, shutil, stat, subprocess, sys, tempfile, unittest
@@ -52,7 +52,7 @@ class Behaviour(unittest.TestCase):
 
     def test_the_helper_runs_on_cores_0_to_3_with_the_switches_in_front_of_steams_own_arguments(self):
         out = self.run_wrapper('-nocrashdialog', '-lang=en_US', '--type=zygote')
-        self.assertIn('ARGS: [--enable-gpu-rasterization] [--enable-zero-copy] [--enable-low-end-device-mode] [-nocrashdialog] [-lang=en_US] [--type=zygote]', out)
+        self.assertIn('ARGS: [--enable-low-end-device-mode] [--disable-gpu-rasterization] [--disable-back-forward-cache] [-nocrashdialog] [-lang=en_US] [--type=zygote]', out)
         self.assertIn('Cpus_allowed_list:\t0-3', out)
 
     def test_without_the_shim_valves_wrapper_pins_the_helper_to_cores_2_to_6_and_adds_no_switches(self):
@@ -61,7 +61,7 @@ class Behaviour(unittest.TestCase):
 
     def test_arguments_with_spaces_and_empty_ones_arrive_unchanged(self):
         out = self.run_wrapper('--user-data-dir=/a b/c', '', '--x=1')
-        self.assertIn('[--enable-low-end-device-mode] [--user-data-dir=/a b/c] [] [--x=1]', out)
+        self.assertIn('[--enable-low-end-device-mode] [--disable-gpu-rasterization] [--disable-back-forward-cache] [--user-data-dir=/a b/c] [] [--x=1]', out)
 
     def test_every_other_use_of_taskset_passes_straight_through(self):
         env = {**os.environ, 'PATH': '%s:%s' % (self.bin, os.environ['PATH'])}
@@ -100,12 +100,12 @@ class Wiring(unittest.TestCase):
 class Mutants(unittest.TestCase):
     MUTANTS = [
         ("exec \"$real\" 0x0f \"$helper\"", "exec \"$real\" 0x7c \"$helper\""),
-        (" --enable-gpu-rasterization", ""),
-        (" --enable-zero-copy", ""),
         (" --enable-low-end-device-mode", ""),
+        (" --disable-gpu-rasterization", ""),
+        (" --disable-back-forward-cache", ""),
         ('[ "${2##*/}" = steamwebhelper ]', '[ "${2##*steamwebhelper}" = "" ]'),
         ('exec "$real" "$@"\n', 'exec "$real" 0x0f "$@"\n'),
-        ('"$helper" --enable-gpu-rasterization --enable-zero-copy --enable-low-end-device-mode "$@"', '"$helper" "$@" --enable-gpu-rasterization --enable-zero-copy --enable-low-end-device-mode'),
+        ('"$helper" --enable-low-end-device-mode --disable-gpu-rasterization --disable-back-forward-cache "$@"', '"$helper" "$@" --enable-low-end-device-mode --disable-gpu-rasterization --disable-back-forward-cache'),
         ('helper=$2; shift 2', 'helper=$2; shift 1'),
     ]
 

@@ -1,7 +1,7 @@
 #!/usr/bin/python3
-"""wisp-game-display: the panel runs at full scale while a game is in front (or being started) and at the image's default (half resolution) the rest of the time.
+"""wisp-game-display: the panel runs at full scale while a game is in front (or being started) and at the image's default (native scale 1, 720x480) the rest of the time.
 
-Why: the default display is half resolution (usr/share/sway/config.kiosk: `output DSI-1 scale 2`, so Steam's UI is laid out on 360x240 and scaled up), which suits the UI but gives a game
+Why: the default display is native scale 1 (usr/share/sway/config.kiosk: `output DSI-1 scale 1`; half resolution at scale 2 was the default until the operator decision of 2026-10-14, kept in `wisp-display default` as the file-defined value). Back when the default was half resolution, Steam's UI was laid out on 360x240 and scaled up, which suited the UI but gave a game
 a 360x240 screen: a game that asks for 640x480 cannot create its window and gets a 360x228 one (found on the handheld 2026-10-12, Quake III Arena; the 2026-10-11 pass worked only because a
 dev script switched the scale by hand). Two pieces cooperate:
   1. the patched `proton` launcher (the Proton patch tool's third piece) switches to full scale BEFORE the game can initialise graphics, which is the only moment that helps (a switch

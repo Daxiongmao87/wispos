@@ -4,11 +4,13 @@
 # (measured 2026-10-14, docs/WISPOS-NOTES.md). So the file stays exactly as Valve ships it, and this shim answers its `taskset` call instead:
 #   for the web helper: the real taskset with all four cores (0x0f) and the Chromium switches below inserted before Steam's own arguments;
 #   for anything else: the real taskset, unchanged.
-# Switches (operator decision 2026-10-14): GPU rasterisation, zero-copy raster, low-end device mode. Their measured effect on the UI's CPU and RAM was nil (docs/WISPOS-NOTES.md); they are kept on request.
+# Switches (operator decision 2026-10-17, steamwebhelper spike 2026-10-16/17): low-end device mode, software rasterisation, no back-forward cache. Measured on the handheld against the
+# 2026-10-14 trio (GPU rasterisation, zero-copy, low-end): zero-copy was the worst single option for throttle events, GPU raster lost to software raster on frame pacing and faulted the
+# Panfrost driver twice, and this set with a 550 MiB idle ceiling produced zero memory.high events and ~0 PSI over the standard navigation workload.
 real=/usr/bin/taskset
 [ -x "$real" ] || real=/bin/taskset
 if [ "${2##*/}" = steamwebhelper ]; then
     helper=$2; shift 2
-    exec "$real" 0x0f "$helper" --enable-gpu-rasterization --enable-zero-copy --enable-low-end-device-mode "$@"
+    exec "$real" 0x0f "$helper" --enable-low-end-device-mode --disable-gpu-rasterization --disable-back-forward-cache "$@"
 fi
 exec "$real" "$@"
