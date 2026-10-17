@@ -67,7 +67,7 @@ class OnePassTests(Base):
 
     def test_without_a_game_the_ceiling_is_the_idle_one(self):
         self.process(101, 'steamwebhelper'); self.once()
-        self.assertEqual(self.high(), 450 * MIB)
+        self.assertEqual(self.high(), 550 * MIB)
 
     def test_with_a_game_the_ceiling_is_the_small_one_and_the_game_is_never_in_the_group(self):
         self.process(101, 'steamwebhelper'); self.process(300, 'reaper'); self.process(301, 'quake3.exe')
@@ -83,7 +83,7 @@ class OnePassTests(Base):
         r = self.once(); self.assertEqual(r.returncode, 1); self.assertIn('no cgroup v2 hierarchy at', r.stderr); self.assertIn(str(self.root), r.stderr)
 
     def test_bad_arguments_exit_2(self):
-        for extra in (['--bogus'], ['--high-game', str(500 * MIB)], ['--high-idle', '0'], ['--poll', '5']):
+        for extra in (['--bogus'], ['--high-game', str(600 * MIB)], ['--high-idle', '0'], ['--poll', '5']):
             r = subprocess.run(self.args('--once', *extra), capture_output=True, text=True); self.assertEqual(r.returncode, 2, extra)
 
 
@@ -124,16 +124,16 @@ class FreezeTests(Base):
         self.process(101, 'steamwebhelper'); p = self.run_loop()
         self.wait_for(lambda: self.freeze_state() == '0', 'the start-up thaw')
         self.process(300, 'reaper'); time.sleep(0.5)
-        self.assertEqual(self.freeze_state(), '0'); self.assertEqual(self.high(), 450 * MIB)                 # a game, but the UI has not been told to hide: visible until a focus event says otherwise
+        self.assertEqual(self.freeze_state(), '0'); self.assertEqual(self.high(), 550 * MIB)                 # a game, but the UI has not been told to hide: visible until a focus event says otherwise
         self.say(self.focus('steam_app_2200', 'Quake 3: Arena')); self.wait_for(lambda: self.freeze_state() == '1', 'the freeze')
         self.assertEqual(self.high(), 96 * MIB)
-        self.say(self.focus('steam', 'Steam Big Picture Mode')); self.wait_for(lambda: self.freeze_state() == '0' and self.high() == 450 * MIB, 'the thaw and the idle ceiling')
+        self.say(self.focus('steam', 'Steam Big Picture Mode')); self.wait_for(lambda: self.freeze_state() == '0' and self.high() == 550 * MIB, 'the thaw and the idle ceiling')
         self.say(self.focus('steam_app_2200')); self.wait_for(lambda: self.freeze_state() == '1', 'the second freeze')
-        self.gone(300); self.wait_for(lambda: self.freeze_state() == '0' and self.high() == 450 * MIB, 'the thaw after the game ends')
+        self.gone(300); self.wait_for(lambda: self.freeze_state() == '0' and self.high() == 550 * MIB, 'the thaw after the game ends')
         p.terminate(); err = p.communicate(timeout=10)[1]
         order = [l.split('wisp-ui-reclaim: wisp-ui: ')[1] for l in err.splitlines() if 'wisp-ui-reclaim: wisp-ui: ' in l and 'web helper' not in l and 'stopped' not in l]
-        want = ['thawed', 'memory.high 450 MiB (no game)', 'memory.high 96 MiB (a game is running)', 'frozen (a game is running)', 'thawed', 'memory.high 450 MiB (a game is running, the Steam UI is in front)',
-                'memory.high 96 MiB (a game is running)', 'frozen (a game is running)', 'thawed', 'memory.high 450 MiB (no game)']
+        want = ['thawed', 'memory.high 550 MiB (no game)', 'memory.high 96 MiB (a game is running)', 'frozen (a game is running)', 'thawed', 'memory.high 550 MiB (a game is running, the Steam UI is in front)',
+                'memory.high 96 MiB (a game is running)', 'frozen (a game is running)', 'thawed', 'memory.high 550 MiB (no game)']
         self.assertEqual(order[:len(want)], want, err)            # down first, then frozen; back: thawed first, then the ceiling up
 
     def run_follow(self, *extra):
@@ -145,36 +145,36 @@ class FreezeTests(Base):
         self.process(101, 'steamwebhelper'); self.process(300, 'reaper'); p = self.run_follow()
         self.wait_for(lambda: self.high() == 96 * MIB, 'the game ceiling at once: a game that is launching counts as in front')
         self.say(self.focus('steam_app_2200', 'Quake 3: Arena')); time.sleep(0.4); self.assertEqual(self.high(), 96 * MIB)
-        self.say(self.focus('steam', 'Steam Big Picture Mode')); self.wait_for(lambda: self.high() == 450 * MIB, 'the idle ceiling with the UI in front and a game still running')
+        self.say(self.focus('steam', 'Steam Big Picture Mode')); self.wait_for(lambda: self.high() == 550 * MIB, 'the idle ceiling with the UI in front and a game still running')
         self.say(self.focus('steam_app_2200')); self.wait_for(lambda: self.high() == 96 * MIB, 'the game ceiling again')
-        self.gone(300); self.wait_for(lambda: self.high() == 450 * MIB, 'the idle ceiling after the game ends')
+        self.gone(300); self.wait_for(lambda: self.high() == 550 * MIB, 'the idle ceiling after the game ends')
         self.assertIsNone(self.freeze_state(), 'nothing may ever be frozen in this mode')
         p.terminate(); err = p.communicate(timeout=10)[1]
         self.assertNotIn('frozen', err); self.assertNotIn('thawed', err); self.assertIsNone(self.freeze_state())
 
     def test_follow_focus_counts_a_launching_game_as_in_front_until_a_game_window_has_had_focus_and_not_again_after_it_ends(self):
         self.process(101, 'steamwebhelper'); p = self.run_follow()
-        self.wait_for(lambda: self.high() == 450 * MIB, 'the idle ceiling with no game')
+        self.wait_for(lambda: self.high() == 550 * MIB, 'the idle ceiling with no game')
         self.process(300, 'reaper'); self.wait_for(lambda: self.high() == 96 * MIB, 'the game ceiling while the game is launching and only the Steam UI has had focus')
         self.say(self.focus('steam', 'Steam Big Picture Mode')); time.sleep(0.4); self.assertEqual(self.high(), 96 * MIB, 'a Steam focus event during the launch changes nothing')
         self.say(self.focus('steam_app_2200')); time.sleep(0.3)
-        self.say(self.focus('steam', 'Steam Big Picture Mode')); self.wait_for(lambda: self.high() == 450 * MIB, 'the idle ceiling once the game has had focus and Steam comes back')
-        self.gone(300); self.wait_for(lambda: self.high() == 450 * MIB, 'idle after the game ends'); time.sleep(0.6); self.process(301, 'reaper')      # a poll must see no game in between (a real game never restarts within 100 ms)
+        self.say(self.focus('steam', 'Steam Big Picture Mode')); self.wait_for(lambda: self.high() == 550 * MIB, 'the idle ceiling once the game has had focus and Steam comes back')
+        self.gone(300); self.wait_for(lambda: self.high() == 550 * MIB, 'idle after the game ends'); time.sleep(0.6); self.process(301, 'reaper')      # a poll must see no game in between (a real game never restarts within 100 ms)
         self.wait_for(lambda: self.high() == 96 * MIB, 'the next game launching counts again: the memory of the last game window is gone')
         self.assertIsNone(self.freeze_state())
 
     def test_freeze_mode_keeps_its_rule_a_launching_game_is_not_hidden_until_it_takes_focus(self):
         self.process(101, 'steamwebhelper'); self.process(300, 'reaper'); p = self.run_loop()
         self.wait_for(lambda: self.freeze_state() == '0', 'start'); time.sleep(0.6)
-        self.assertEqual(self.high(), 450 * MIB); self.assertEqual(self.freeze_state(), '0')        # the shipped --freeze policy is unchanged
+        self.assertEqual(self.high(), 550 * MIB); self.assertEqual(self.freeze_state(), '0')        # the shipped --freeze policy is unchanged
 
     def test_follow_focus_with_a_lost_subscription_means_visible(self):
         self.process(101, 'steamwebhelper'); self.process(300, 'reaper')
         broken = self.d / 'broken'; broken.write_text('#!/bin/sh\nexit 1\n'); broken.chmod(0o755)
         p = subprocess.Popen(self.args('--poll', '100', '--follow-focus', '--swaymsg', str(broken)), stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: (p.poll() is None and p.terminate(), p.wait(10), p.stderr.close()))
-        self.wait_for(lambda: self.high() == 450 * MIB, 'the idle ceiling: no subscription means the UI counts as visible')
-        time.sleep(0.5); self.assertEqual(self.high(), 450 * MIB)
+        self.wait_for(lambda: self.high() == 550 * MIB, 'the idle ceiling: no subscription means the UI counts as visible')
+        time.sleep(0.5); self.assertEqual(self.high(), 550 * MIB)
 
     def test_only_the_exact_class_steam_is_the_ui(self):
         self.process(101, 'steamwebhelper'); self.process(300, 'reaper'); self.run_loop(); self.wait_for(lambda: self.freeze_state() == '0', 'start')
@@ -188,7 +188,7 @@ class FreezeTests(Base):
         p = subprocess.Popen(self.args('--poll', '100', '--freeze', '--swaymsg', str(broken)), stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: (p.poll() is None and p.terminate(), p.wait(10), p.stderr.close()))
         self.wait_for(lambda: self.freeze_state() == '0', 'start'); time.sleep(1.0)
-        self.assertEqual(self.freeze_state(), '0'); self.assertEqual(self.high(), 450 * MIB)
+        self.assertEqual(self.freeze_state(), '0'); self.assertEqual(self.high(), 550 * MIB)
         p.terminate(); self.assertIn('treating the UI as visible', p.communicate(timeout=10)[1])
 
     def test_sway_going_away_while_frozen_thaws_the_ui(self):
@@ -219,9 +219,9 @@ class LoopTests(Base):
 
     def test_a_game_starting_and_ending_moves_the_ceiling_down_and_back_and_writes_only_on_change(self):
         self.process(101, 'steamwebhelper'); p = self.run_loop()
-        self.wait_for(lambda: self.high() == 450 * MIB, 'the idle ceiling')
+        self.wait_for(lambda: self.high() == 550 * MIB, 'the idle ceiling')
         self.process(300, 'reaper'); self.wait_for(lambda: self.high() == 96 * MIB, 'the game ceiling')
-        self.gone(300); self.wait_for(lambda: self.high() == 450 * MIB, 'the idle ceiling again')
+        self.gone(300); self.wait_for(lambda: self.high() == 550 * MIB, 'the idle ceiling again')
         time.sleep(0.5); p.terminate(); err = p.communicate(timeout=10)[1]
         lines = [l for l in err.splitlines() if 'memory.high' in l and 'stopped' not in l]
         self.assertEqual(len(lines), 3, err)                                                  # idle, game, idle: nothing is written on the polls in between

@@ -16,7 +16,7 @@ pkill -f '^/usr/bin/wisp-ui-reclaim' 2>/dev/null; sleep 1; echo 0 > /sys/fs/cgro
 mkdir -p /run/systemd/system/wisp-steam.service.d
 printf '[Service]\nEnvironment=PRESSURE_VESSEL_FILESYSTEMS_RW=/run/0-runtime-dir/sway-ipc.0.sock\n' > /run/systemd/system/wisp-steam.service.d/pv-sway.conf
 systemctl daemon-reload
-sh $W/ui-flags.sh set "--enable-gpu-rasterization --enable-zero-copy --enable-low-end-device-mode" || exit 1
+sh $W/ui-flags.sh set "--enable-low-end-device-mode --disable-gpu-rasterization --disable-back-forward-cache" || exit 1
 # the ceiling daemon must run BEFORE Steam starts: pages are charged to the cgroup that was current when they were allocated
 systemd-run --unit=wisp-reclaim-dev --collect $E $W/wisp-ui-reclaim --follow-focus --high-game 262144000 >/dev/null
 sleep 2

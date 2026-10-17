@@ -16,10 +16,11 @@
  * --follow-focus (dev, 2026-10-13, operator idea "a soft freeze"): the ceiling follows which window is in front exactly as with --freeze (the game ceiling only while a game runs AND the
  * Steam UI is not in front, the idle ceiling when the UI is shown), but nothing is frozen: the UI stays alive, to be kept quiet by priority instead (docs/WISPOS-NOTES.md "soft freeze").
  * In that mode a game that is still LAUNCHING (a `reaper` exists but no window other than the Steam UI has taken focus yet) counts as "game in front": the launch is the most memory-hungry moment.
- * Defaults (the one place they live): /sys/fs/cgroup/unified, /proc, 450 MiB idle, 96 MiB in a game, 200 ms. The idle ceiling was 300 MiB until the first cold start of Steam's UI on a
+ * Defaults (the one place they live): /sys/fs/cgroup/unified, /proc, 550 MiB idle, 96 MiB in a game, 200 ms. The idle ceiling was 300 MiB until the first cold start of Steam's UI on a
  * freshly flashed card (2026-10-12): the UI's working set sits at about 300 MiB, so every allocation was throttled, zram filled to its 450 MiB RAM cap, the load average reached 47 and the
  * UI took over 30 minutes to appear; with the ceiling lifted it came up in about 10, and with 450 MiB on a fresh start the load peaked at 7, memory pressure was 0 within five minutes and
- * zram held 115 MB. The ceilings are INITIAL values: a 2026-10-11 device test (docs/WISPOS-NOTES.md) held
+ * zram held 115 MB. The steamwebhelper spike (2026-10-16/17) then showed the interactive UI sitting at 390-440 MiB against the 450 MiB ceiling, throttling on every navigation, and zero
+ * memory.high events at 550 MiB, so the idle default moved to 550. The ceilings are INITIAL values: a 2026-10-11 device test (docs/WISPOS-NOTES.md) held
  * the UI at 300 MB resident with the rest in zram and the UI up, and a simulated game start took it from 245 MB to 76 MB in 3 s (+75-90 MB for the game); the numbers get tuned on the device.
  * The 200 ms poll matters: pages are charged to the cgroup that was current when they were ALLOCATED, so a helper must be moved while it is young (a 16 hour old helper moved in later
  * is charged 0: its resident pages stay uncharged and the ceiling cannot reach them). So this must be running BEFORE Steam starts (wisp-ui-reclaim.service is ordered before wisp-steam). --once does a single pass and exits (the tests use it); an unusable cgroup root exits 1 with the reason.
@@ -51,7 +52,7 @@ static volatile sig_atomic_t stop;
 static void on_signal(int sig) { (void)sig; stop = 1; }
 static bool freeze_opt;
 static bool follow_opt;                                           /* --follow-focus: the ceiling follows which window is in front, like --freeze, but nothing is ever frozen */
-static unsigned long long high_idle = 450ULL << 20, high_game = 96ULL << 20;
+static unsigned long long high_idle = 550ULL << 20, high_game = 96ULL << 20;
 
 static bool write_file(const char *path, const char *text, int flags) {
     int fd = open(path, O_WRONLY | O_CREAT | flags, 0644);               /* O_CREAT: the control files exist on a real cgroupfs; a test directory needs them made */
